@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 8
+
+Source snapshot: April 28-29, 2026.
+
+- Added self-contained geometry, flow-geometry, and stacked ensemble trainers.
+- Added post-hoc feature association and PINN-derived diagnostic tools.
+- Added a single launcher for the Version 8 experiment set.
+
 ## Version 7
 
 Source snapshot: April 21-May 4, 2026.
