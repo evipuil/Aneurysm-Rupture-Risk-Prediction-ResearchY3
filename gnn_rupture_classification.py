@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 1 source snapshot
+# Version 2 source snapshot
 """
 gnn_rupture_classification.py
 
@@ -1001,12 +1001,15 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     criterion: nn.Module,
     device: torch.device,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
     """Train for one epoch."""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
+
+    all_labels = []
+    all_probs = []
 
     for data in dataloader:
         data = data.to(device)
@@ -1019,10 +1022,19 @@ def train_one_epoch(
 
         running_loss += loss.item() * data.num_graphs
         preds = logits.argmax(dim=1)
+        probs = F.softmax(logits, dim=1)[:, 1]
         correct += (preds == data.y).sum().item()
         total += data.num_graphs
 
-    return running_loss / total, correct / total
+        all_labels.extend(data.y.cpu().numpy())
+        all_probs.extend(probs.detach().cpu().numpy())
+
+    try:
+        auc = roc_auc_score(all_labels, all_probs)
+    except Exception:
+        auc = 0.5
+
+    return running_loss / total, correct / total, auc
 
 
 def evaluate(
@@ -1268,8 +1280,16 @@ def train_kfold(
         best_val_auc = 0.0
         epochs_without_improvement = 0
 
+        # Setup CSV logging
+        csv_path = os.path.join(save_dir, f"fold{fold + 1}_training_log.csv")
+        with open(csv_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(
+                ["epoch", "train_loss", "train_acc", "train_auc", "val_loss", "val_acc", "val_auc"]
+            )
+
         for epoch in range(1, epochs + 1):
-            train_loss, train_acc = train_one_epoch(
+            train_loss, train_acc, train_auc = train_one_epoch(
                 model, train_loader, optimizer, criterion, device
             )
             val_loss, val_acc, val_preds, val_labels_ep, val_probs = evaluate(
@@ -1282,9 +1302,16 @@ def train_kfold(
             )
             scheduler.step()
 
+            # Log to CSV
+            with open(csv_path, "a", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(
+                    [epoch, train_loss, train_acc, train_auc, val_loss, val_acc, val_auc]
+                )
+
             if epoch % 10 == 0 or val_auc > best_val_auc:
                 print(
-                    f"  Epoch {epoch:03d} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+                    f"  Epoch {epoch:03d} | Train Acc: {train_acc:.4f} AUC: {train_auc:.4f} | Val Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
                 )
 
             if val_auc > best_val_auc:
@@ -1598,11 +1625,11 @@ def main():
         help="Directory containing hemodynamics data",
     )
     parser.add_argument("--metadata", type=str, default="metadata.csv", help="Path to metadata.csv")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=200, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument(
-        "--target_n", type=int, default=2048, help="Target number of points per sample"
+        "--target_n", type=int, default=8192, help="Target number of points per sample"
     )
     parser.add_argument(
         "--k_neighbors",
@@ -1626,7 +1653,10 @@ def main():
     )
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate")
     parser.add_argument(
-        "--early_stopping", type=int, default=20, help="Early stopping patience (epochs)"
+        "--early_stopping",
+        type=int,
+        default=999,
+        help="Early stopping patience (epochs), set high to disable",
     )
     parser.add_argument("--label_smoothing", type=float, default=0.1, help="Label smoothing factor")
     parser.add_argument(
@@ -1641,6 +1671,12 @@ def main():
     )
     parser.add_argument(
         "--kfold", type=int, default=0, help="Number of folds for k-fold CV (0 = single split)"
+    )
+    parser.add_argument(
+        "--kfold_save_dir",
+        type=str,
+        default="training_logs/kfold_gnn",
+        help="Directory to save k-fold models",
     )
     parser.add_argument(
         "--save_path",
@@ -1667,7 +1703,7 @@ def main():
             hidden_channels=args.hidden_channels,
             num_layers=args.num_layers,
             dropout=args.dropout,
-            save_dir="kfold_models",
+            save_dir=args.kfold_save_dir,
             seed=args.seed,
             use_focal_loss=args.focal_loss,
             focal_gamma=args.focal_gamma,

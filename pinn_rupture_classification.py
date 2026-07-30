@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 1 source snapshot
+# Version 2 source snapshot
 """
 pinn_rupture_classification.py
 
@@ -822,9 +822,18 @@ def load_metadata(metadata_csv: str) -> Dict[str, int]:
     with open(metadata_csv, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # Handle both 'name' and 'Name' column headers
-            name = row.get("name") or row.get("Name") or row.get("case_name", "")
-            status = row.get("rupture_status") or row.get("Rupture_status") or row.get("status", "")
+            # Handle different column name conventions
+            name = (
+                row.get("name")
+                or row.get("Name")
+                or row.get("case_name")
+                or row.get("dataset")
+                or row.get("vesselFileID")
+                or ""
+            )
+            status = (
+                row.get("rupture_status") or row.get("Rupture_status") or row.get("status") or ""
+            )
 
             if not name or not status:
                 continue
@@ -844,35 +853,45 @@ def load_metadata(metadata_csv: str) -> Dict[str, int]:
 
 
 def find_hemodynamics_files(data_dir: str, metadata_csv: str) -> List[Tuple[str, int]]:
-    """Find all hemodynamics_aggregate.csv files and match with labels."""
+    """Find all hemodynamics CSV files and match with labels.
+
+    Supports two directory structures:
+    1. Nested: data_dir/case_name/hemodynamics_aggregate.csv
+    2. Flat:   data_dir/case_name_corrected.csv or case_name_hemodynamics.csv
+    """
     mapping = load_metadata(metadata_csv)
     file_label_pairs = []
     unmatched = []
 
+    # Strategy 1: Check for nested structure (subdirectories with hemodynamics_aggregate.csv)
     for item in os.listdir(data_dir):
         item_path = os.path.join(data_dir, item)
         if os.path.isdir(item_path):
             csv_path = os.path.join(item_path, "hemodynamics_aggregate.csv")
             if os.path.exists(csv_path):
-                # Try to match with metadata
                 folder_name = item
-
-                # Try different matching strategies
-                label = None
-                for key in mapping:
-                    if key in folder_name or folder_name in key:
-                        label = mapping[key]
-                        break
-                    # Try without _cut suffix
-                    base_name = re.sub(r"_cut\d*$", "", folder_name)
-                    if key in base_name or base_name in key:
-                        label = mapping[key]
-                        break
-
+                label = _match_label(folder_name, mapping)
                 if label is not None:
                     file_label_pairs.append((csv_path, label))
                 else:
                     unmatched.append(folder_name)
+
+    # Strategy 2: If no nested files found, check for flat structure
+    if len(file_label_pairs) == 0:
+        # Look for *_corrected.csv or *_hemodynamics.csv files directly in data_dir
+        for item in os.listdir(data_dir):
+            if item.endswith("_corrected.csv") or item.endswith("_hemodynamics.csv"):
+                csv_path = os.path.join(data_dir, item)
+                # Extract case name from filename
+                case_name = item.replace("_corrected.csv", "").replace("_hemodynamics.csv", "")
+                label = _match_label(case_name, mapping)
+                if label is not None:
+                    # Avoid duplicates (prefer _corrected.csv over _hemodynamics.csv)
+                    if not any(case_name in p for p, _ in file_label_pairs):
+                        file_label_pairs.append((csv_path, label))
+                else:
+                    if case_name not in unmatched:
+                        unmatched.append(case_name)
 
     n_ruptured = sum(1 for _, label in file_label_pairs if label == 1)
     n_unruptured = sum(1 for _, label in file_label_pairs if label == 0)
@@ -883,6 +902,18 @@ def find_hemodynamics_files(data_dir: str, metadata_csv: str) -> List[Tuple[str,
     print(f"       - Unmatched: {len(unmatched)}")
 
     return file_label_pairs
+
+
+def _match_label(name: str, mapping: dict) -> int:
+    """Try to match a case name with metadata labels."""
+    for key in mapping:
+        if key in name or name in key:
+            return mapping[key]
+        # Try without _cut suffix
+        base_name = re.sub(r"_cut\d*$", "", name)
+        if key in base_name or base_name in key:
+            return mapping[key]
+    return None
 
 
 def prepare_train_val_split(
@@ -1203,6 +1234,12 @@ def train_kfold(
         best_val_auc = 0.0
         epochs_without_improvement = 0
 
+        # CSV logging for this fold
+        csv_path = os.path.join(save_dir, f"fold{fold + 1}_training_log.csv")
+        with open(csv_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+
         for epoch in range(1, epochs + 1):
             train_loss, train_acc, loss_dict = train_one_epoch(
                 model, train_loader, optimizer, criterion, device
@@ -1216,6 +1253,11 @@ def train_kfold(
                 else 0.5
             )
             scheduler.step()
+
+            # Log to CSV
+            with open(csv_path, "a", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
 
             if epoch % 10 == 0 or val_auc > best_val_auc:
                 physics_str = ""
@@ -1265,6 +1307,18 @@ def train_kfold(
 
     overall_auc = roc_auc_score(np.array(all_val_labels), np.array(all_val_probs))
     print(f"\nOverall AUC (all folds combined): {overall_auc:.4f}")
+
+    # Write summary CSV with k-fold results
+    summary_csv_path = os.path.join(save_dir, "kfold_summary.csv")
+    with open(summary_csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["fold", "val_acc", "val_auc"])
+        for i, (acc, auc) in enumerate(zip(fold_accs, fold_aucs)):
+            writer.writerow([i + 1, acc, auc])
+        writer.writerow(["mean", np.mean(fold_accs), np.mean(fold_aucs)])
+        writer.writerow(["std", np.std(fold_accs), np.std(fold_aucs)])
+        writer.writerow(["overall", (np.array(all_val_probs) > 0.5).mean(), overall_auc])
+    print(f"\nSummary saved to: {summary_csv_path}")
 
     return models, fold_aucs, fold_accs
 
@@ -1411,6 +1465,12 @@ def train_model(
     print("Starting PINN Training")
     print("=" * 60)
 
+    # CSV logging
+    csv_path = save_path.replace(".pth", "_training_log.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+
     start_time = time.time()
 
     for epoch in range(1, epochs + 1):
@@ -1429,6 +1489,11 @@ def train_model(
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
         history["val_auc"].append(val_auc)
+
+        # Log to CSV
+        with open(csv_path, "a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
 
         # Print with physics loss info
         physics_str = ""

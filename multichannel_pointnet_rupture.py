@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 1 source snapshot
+# Version 2 source snapshot
 """
 multichannel_pointnet_rupture.py
 
@@ -87,19 +87,22 @@ class FocalLoss(nn.Module):
 # Utility Functions: Point Cloud Operations
 def index_points(points: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
     """
-    Index points based on indices.
-
-    Args:
-        points: (B, N, C) tensor of point features
-        idx: (B, S) tensor of indices
-
-    Returns:
-        (B, S, C) tensor of indexed points
+    Input:
+        points: input points data, [B, N, C]
+        idx: sample index data, [B, S] or [B, S, K]
+    Return:
+        new_points: indexed points data, [B, S, C] or [B, S, K, C]
     """
-    B, N, C = points.shape
-    S = idx.shape[1]
-    idx_expanded = idx.unsqueeze(-1).expand(B, S, C)
-    new_points = torch.gather(points, 1, idx_expanded)
+    device = points.device
+    B = points.shape[0]
+    view_shape = list(idx.shape)
+    view_shape[1:] = [1] * (len(view_shape) - 1)
+    repeat_shape = list(idx.shape)
+    repeat_shape[0] = 1
+    batch_indices = (
+        torch.arange(B, dtype=torch.long, device=device).view(view_shape).repeat(repeat_shape)
+    )
+    new_points = points[batch_indices, idx, :]
     return new_points
 
 
@@ -1137,6 +1140,12 @@ def train_kfold(
         best_val_auc = 0.0
         epochs_without_improvement = 0
 
+        # CSV logging for this fold
+        csv_path = os.path.join(save_dir, f"fold{fold + 1}_training_log.csv")
+        with open(csv_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = train_one_epoch(
                 model, train_loader, optimizer, criterion, device
@@ -1150,6 +1159,11 @@ def train_kfold(
                 else 0.5
             )
             scheduler.step()
+
+            # Log to CSV
+            with open(csv_path, "a", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
 
             if epoch % 10 == 0 or val_auc > best_val_auc:
                 print(
@@ -1199,6 +1213,18 @@ def train_kfold(
     all_val_labels = np.array(all_val_labels)
     overall_auc = roc_auc_score(all_val_labels, all_val_probs)
     print(f"\nOverall AUC (all folds combined): {overall_auc:.4f}")
+
+    # Write summary CSV with k-fold results
+    summary_csv_path = os.path.join(save_dir, "kfold_summary.csv")
+    with open(summary_csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["fold", "val_acc", "val_auc"])
+        for i, (acc, auc) in enumerate(zip(fold_accs, fold_aucs)):
+            writer.writerow([i + 1, acc, auc])
+        writer.writerow(["mean", np.mean(fold_accs), np.mean(fold_aucs)])
+        writer.writerow(["std", np.std(fold_accs), np.std(fold_aucs)])
+        writer.writerow(["overall", (all_val_probs > 0.5).mean(), overall_auc])
+    print(f"\nSummary saved to: {summary_csv_path}")
 
     return models, fold_aucs, fold_accs
 
@@ -1333,6 +1359,12 @@ def train_model(
     print("Starting Training")
     print("=" * 60)
 
+    # CSV logging
+    csv_path = save_path.replace(".pth", "_training_log.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+
     start_time = time.time()
 
     for epoch in range(1, epochs + 1):
@@ -1356,6 +1388,11 @@ def train_model(
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
         history["val_auc"].append(val_auc)
+
+        # Log to CSV
+        with open(csv_path, "a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
 
         # Print progress
         print(

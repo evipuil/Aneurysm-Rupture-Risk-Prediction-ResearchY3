@@ -1,24 +1,25 @@
 # Aneurysm rupture model history
 
-This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 1. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 1**.
+This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 2. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 2**.
 
-The Version 1 source snapshot dates to January 29, 2026, with retained support files from December 2025 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
+The Version 2 source snapshot dates to February 1, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
 
-## Version 1
+## Version 2
 
-Initial geometry, hemodynamic, graph, and physics-informed rupture prototypes.
+Fusion and ensemble experiments with repeatable training launchers.
 
-### Initial snapshot
+### Changes from Version 1
 
-- Added VTP batch inference and DeepONet inference utilities.
-- Added separate geometry PointNet, graph, multichannel, and PINN rupture classifiers.
-- Added the first combined geometry-hemodynamic classifier and PINN correction workflow.
+- Added standalone fusion and ensemble training paths.
+- Expanded geometry and multimodal classifiers and added a single-case PINN diagnostic.
+- Added a repeatable shell training matrix for the main model variants.
 
 ## Code in this snapshot
 
-- Python: `batch_vtp_inference.py`, `combined_rupture_classification.py`, `geometry_pointnet.py`, `gnn_rupture_classification.py`, `inference_deeponet.py`, `multichannel_pointnet_rupture.py`, `neural_networks.py`, `optimized_pinn.py`, `pinn_correction_batch.py`, `pinn_rupture_classification.py`, `visualize_advanced_params.py`
+- Python: `batch_vtp_inference.py`, `combined_rupture_classification.py`, `ensemble_model.py`, `fusion.py`, `geometry_pointnet.py`, `gnn_rupture_classification.py`, `inference_deeponet.py`, `multichannel_pointnet_rupture.py`, `neural_networks.py`, `optimized_pinn.py`, `pinn_correction_batch.py`, `pinn_rupture_classification.py`, `sample_pinn_correction.py`, `visualize_advanced_params.py`
+- Shell: `train.sh`, `train1.sh`, `train2.sh`, `train3.sh`, `train4.sh`
 
-Every Python and shell source carries a Version 1 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
+Every Python and shell source carries a Version 2 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
 
 ## Setup
 
@@ -41,6 +42,7 @@ Data is intentionally not stored here. Most snapshots expect a metadata CSV with
 | Tag | Source snapshot | Main change |
 | --- | --- | --- |
 | `v1` | January 29, 2026, with retained support files from December 2025 | Initial geometry, hemodynamic, graph, and physics-informed rupture prototypes |
+| `v2` | February 1, 2026 | Fusion and ensemble experiments with repeatable training launchers |
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed progression. Commit timestamps show the July 2026 import sequence; they do not claim that the original work happened on those commit dates.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 1 source snapshot
+# Version 2 source snapshot
 """
 train_pointnetpp.py
 
@@ -14,6 +14,7 @@ Expect folder structure:
 Each txt is "x y z" with 1024 rows (or will be cropped/padded).
 """
 
+import csv
 import glob
 import math
 import os
@@ -31,13 +32,24 @@ from torch.utils.data import DataLoader, Dataset
 
 # Utils: indexing + FPS
 def index_points(points, idx):
-    # points: B x N x C
-    # idx: B x S
-    B, N, C = points.shape
-    S = idx.shape[1]
-    idx_expanded = idx.unsqueeze(-1).expand(B, S, C)  # B x S x C
-    new_points = torch.gather(points, 1, idx_expanded)
-    return new_points  # B x S x C
+    """
+    Input:
+        points: input points data, [B, N, C]
+        idx: sample index data, [B, S] or [B, S, K]
+    Return:
+        new_points: indexed points data, [B, S, C] or [B, S, K, C]
+    """
+    device = points.device
+    B = points.shape[0]
+    view_shape = list(idx.shape)
+    view_shape[1:] = [1] * (len(view_shape) - 1)
+    repeat_shape = list(idx.shape)
+    repeat_shape[0] = 1
+    batch_indices = (
+        torch.arange(B, dtype=torch.long, device=device).view(view_shape).repeat(repeat_shape)
+    )
+    new_points = points[batch_indices, idx, :]
+    return new_points
 
 
 def farthest_point_sample(xyz, npoint):
@@ -58,11 +70,63 @@ def farthest_point_sample(xyz, npoint):
     return centroids  # B x npoint
 
 
+def square_distance(src, dst):
+    B, N, _ = src.shape
+    _, M, _ = dst.shape
+    dist = -2 * torch.matmul(src, dst.permute(0, 2, 1))
+    dist += torch.sum(src**2, -1).view(B, N, 1)
+    dist += torch.sum(dst**2, -1).view(B, 1, M)
+    return dist
+
+
+def query_ball_point(radius, nsample, xyz, new_xyz):
+    device = xyz.device
+    B, N, C = xyz.shape
+    _, S, _ = new_xyz.shape
+    group_idx = torch.arange(N, dtype=torch.long, device=device).view(1, 1, N).repeat([B, S, 1])
+    sqrdists = square_distance(new_xyz, xyz)
+    group_idx[sqrdists > radius**2] = N
+    group_idx = group_idx.sort(dim=-1)[0][:, :, :nsample]
+    group_first = group_idx[:, :, 0].view(B, S, 1).repeat([1, 1, nsample])
+    mask = group_idx == N
+    group_idx[mask] = group_first[mask]
+    return group_idx
+
+
+def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
+    B, N, C = xyz.shape
+    S = npoint
+    fps_idx = farthest_point_sample(xyz, npoint)
+    new_xyz = index_points(xyz, fps_idx)
+    idx = query_ball_point(radius, nsample, xyz, new_xyz)
+    grouped_xyz = index_points(xyz, idx)
+    grouped_xyz_norm = grouped_xyz - new_xyz.view(B, S, 1, C)
+    if points is not None:
+        grouped_points = index_points(points, idx)
+        new_points = torch.cat([grouped_xyz_norm, grouped_points], dim=-1)
+    else:
+        new_points = grouped_xyz_norm
+    return new_points, new_xyz, fps_idx
+
+
+def sample_and_group_all(xyz, points):
+    device = xyz.device
+    B, N, C = xyz.shape
+    new_xyz = torch.zeros(B, 1, C).to(device)
+    grouped_xyz = xyz.view(B, 1, N, C)
+    if points is not None:
+        new_points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)
+    else:
+        new_points = grouped_xyz
+    return new_xyz, new_points
+
+
 # Dataset
 class AneurysmDataset(Dataset):
-    def __init__(self, files_labels, augment=False):
+    def __init__(self, files_labels, augment=False, target_n=8192):
         self.files_labels = files_labels
         self.augment = augment
+        self.target_n = target_n
 
     def __len__(self):
         return len(self.files_labels)
@@ -70,11 +134,15 @@ class AneurysmDataset(Dataset):
     def __getitem__(self, idx):
         path, label = self.files_labels[idx]
         pts = np.loadtxt(path).astype(np.float32)
-        if pts.shape[0] < 1024:
-            pad = np.zeros((1024 - pts.shape[0], 3), dtype=np.float32)
-            pts = np.vstack([pts, pad])
-        else:
-            pts = pts[:1024, :]
+        n_pts = pts.shape[0]
+        if n_pts < self.target_n:
+            # Pad by repeating random points
+            pad_idx = np.random.choice(n_pts, self.target_n - n_pts, replace=True)
+            pts = np.vstack([pts, pts[pad_idx]])
+        elif n_pts > self.target_n:
+            # Subsample randomly
+            idx = np.random.choice(n_pts, self.target_n, replace=False)
+            pts = pts[idx]
 
         # normalize
         pts = pts - np.mean(pts, axis=0)
@@ -115,48 +183,55 @@ class AneurysmDataset(Dataset):
 
 # Set Abstraction (simple hierarchical)
 class PointNetSetAbstraction(nn.Module):
-    def __init__(self, npoint, in_channel, mlp):
+    def __init__(self, npoint, radius, nsample, in_channel, mlp, group_all=False):
         super().__init__()
         self.npoint = npoint
+        self.radius = radius
+        self.nsample = nsample
         self.mlp_convs = nn.ModuleList()
-        last_ch = in_channel
-        for out_ch in mlp:
-            self.mlp_convs.append(nn.Conv1d(last_ch, out_ch, 1))
-            self.mlp_convs.append(nn.BatchNorm1d(out_ch))
-            last_ch = out_ch
+        self.mlp_bns = nn.ModuleList()
+        last_channel = in_channel
+        for out_channel in mlp:
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            last_channel = out_channel
+        self.group_all = group_all
 
     def forward(self, xyz, points=None):
-        B, N, _ = xyz.shape
-        if self.npoint is not None:
-            idx = farthest_point_sample(xyz, self.npoint)
-            new_xyz = index_points(xyz, idx)
+        if self.group_all:
+            new_xyz, new_points = sample_and_group_all(xyz, points)
         else:
-            idx = None
-            new_xyz = torch.mean(xyz, dim=1, keepdim=True)
+            new_points, new_xyz, _ = sample_and_group(
+                self.npoint, self.radius, self.nsample, xyz, points
+            )
 
-        if points is None:
-            feats = xyz
-        else:
-            feats = points.permute(0, 2, 1).contiguous()
-
-        if self.npoint is not None:
-            new_feats = index_points(feats, idx)
-        else:
-            new_feats = feats.mean(dim=1, keepdim=True)
-
-        x = new_feats.permute(0, 2, 1).contiguous()
-        for layer in self.mlp_convs:
-            x = F.relu(layer(x)) if isinstance(layer, nn.Conv1d) else layer(x)
-        return x, new_xyz
+        new_points = new_points.permute(0, 3, 2, 1)  # [B, C+D, nsample,npoint]
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            new_points = F.relu(bn(conv(new_points)))
+        new_points = torch.max(new_points, 2)[0]
+        new_points = new_points.permute(0, 2, 1)  # [B, npoint, D']
+        return new_points, new_xyz
 
 
 # Model
 class PointNetPlusPlus(nn.Module):
     def __init__(self, num_classes=2):
         super().__init__()
-        self.sa1 = PointNetSetAbstraction(npoint=512, in_channel=3, mlp=[64, 64, 128])
-        self.sa2 = PointNetSetAbstraction(npoint=128, in_channel=128, mlp=[128, 128, 256])
-        self.sa3 = PointNetSetAbstraction(npoint=None, in_channel=256, mlp=[256, 512, 1024])
+        self.sa1 = PointNetSetAbstraction(
+            npoint=512, radius=0.2, nsample=32, in_channel=3, mlp=[64, 64, 128], group_all=False
+        )
+        self.sa2 = PointNetSetAbstraction(
+            npoint=128, radius=0.4, nsample=64, in_channel=131, mlp=[128, 128, 256], group_all=False
+        )
+        self.sa3 = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=259,
+            mlp=[256, 512, 1024],
+            group_all=True,
+        )
 
         self.fc1 = nn.Linear(1024, 512)
         self.bn1 = nn.BatchNorm1d(512)
@@ -171,7 +246,7 @@ class PointNetPlusPlus(nn.Module):
         l1_pts, l1_xyz = self.sa1(xyz, None)
         l2_pts, l2_xyz = self.sa2(l1_xyz, l1_pts)
         l3_pts, l3_xyz = self.sa3(l2_xyz, l2_pts)
-        x = F.adaptive_max_pool1d(l3_pts, 1).view(B, -1)
+        x = l3_pts.view(B, 1024)
         x = F.relu(self.bn1(self.fc1(x)))
         x = self.drop1(x)
         x = F.relu(self.bn2(self.fc2(x)))
@@ -251,8 +326,9 @@ def train_kfold(
     root_dir="data",
     n_folds=5,
     epochs=100,
-    batch_size=16,
-    lr=1e-3,
+    batch_size=8,
+    lr=1e-4,
+    target_n=8192,
     num_workers=2,
     seed=42,
     save_dir="kfold_geometry_models",
@@ -310,11 +386,16 @@ def train_kfold(
 
         print(f"[FOLD {fold + 1}] Train: {len(train_pairs)}, Val: {len(val_pairs)}")
 
-        train_ds = AneurysmDataset(train_pairs, augment=True)
-        val_ds = AneurysmDataset(val_pairs, augment=False)
+        train_ds = AneurysmDataset(train_pairs, augment=True, target_n=target_n)
+        val_ds = AneurysmDataset(val_pairs, augment=False, target_n=target_n)
 
         train_loader = DataLoader(
-            train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+            train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=True,
         )
         val_loader = DataLoader(
             val_ds,
@@ -331,9 +412,19 @@ def train_kfold(
 
         best_val_acc = 0.0
 
+        # CSV logging for this fold
+        csv_path = os.path.join(save_dir, f"fold{fold + 1}_training_log.csv")
+        with open(csv_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(
+                ["epoch", "train_loss", "train_acc", "train_auc", "val_loss", "val_acc", "val_auc"]
+            )
+
         for epoch in range(1, epochs + 1):
             model.train()
             running_loss, running_correct, running_total = 0.0, 0, 0
+            train_labels_all = []
+            train_probs_all = []
 
             for points, labels_batch in train_loader:
                 points, labels_batch = points.to(device), labels_batch.to(device)
@@ -345,18 +436,33 @@ def train_kfold(
 
                 running_loss += loss.item() * points.size(0)
                 preds = logits.argmax(dim=1)
+                probs = F.softmax(logits, dim=1)[:, 1]
                 running_correct += (preds == labels_batch).sum().item()
                 running_total += points.size(0)
 
-            running_loss / running_total
+                train_labels_all.extend(labels_batch.cpu().numpy())
+                train_probs_all.extend(probs.detach().cpu().numpy())
+
+            train_loss = running_loss / running_total
             train_acc = running_correct / running_total
+            try:
+                train_auc = roc_auc_score(train_labels_all, train_probs_all)
+            except Exception:
+                train_auc = 0.5
 
             val_loss, val_acc, val_auc, _, _, _ = evaluate(model, val_loader, device)
             scheduler.step()
 
+            # Log to CSV
+            with open(csv_path, "a", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(
+                    [epoch, train_loss, train_acc, train_auc, val_loss, val_acc, val_auc]
+                )
+
             if epoch % 20 == 0 or val_acc > best_val_acc:
                 print(
-                    f"  Epoch {epoch:03d} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+                    f"  Epoch {epoch:03d} | Train Acc: {train_acc:.4f} AUC: {train_auc:.4f} | Val Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
                 )
 
             if val_acc > best_val_acc:
@@ -392,14 +498,27 @@ def train_kfold(
     overall_auc = roc_auc_score(all_val_labels, all_val_probs)
     print(f"\nOverall AUC (all folds combined): {overall_auc:.4f}")
 
+    # Write summary CSV with k-fold results
+    summary_csv_path = os.path.join(save_dir, "kfold_summary.csv")
+    with open(summary_csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["fold", "val_acc", "val_auc"])
+        for i, (acc, auc) in enumerate(zip(fold_accs, fold_aucs)):
+            writer.writerow([i + 1, acc, auc])
+        writer.writerow(["mean", np.mean(fold_accs), np.mean(fold_aucs)])
+        writer.writerow(["std", np.std(fold_accs), np.std(fold_aucs)])
+        writer.writerow(["overall", (np.array(all_val_probs) > 0.5).mean(), overall_auc])
+    print(f"\nSummary saved to: {summary_csv_path}")
+
     return fold_aucs, fold_accs
 
 
 def train_main(
     root_dir="data",
     epochs=100,
-    batch_size=16,
-    lr=1e-3,
+    batch_size=8,
+    lr=1e-4,
+    target_n=8192,
     val_fraction=0.2,
     num_workers=2,
     seed=42,
@@ -411,13 +530,16 @@ def train_main(
     random.seed(seed)
 
     train_files, val_files = prepare_balanced_train_val(root_dir, val_fraction, seed)
-    train_ds, val_ds = (
-        AneurysmDataset(train_files, augment=True),
-        AneurysmDataset(val_files, augment=False),
-    )
+    train_ds = AneurysmDataset(train_files, augment=True, target_n=target_n)
+    val_ds = AneurysmDataset(val_files, augment=False, target_n=target_n)
 
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True,
     )
     val_loader = DataLoader(
         val_ds,
@@ -440,6 +562,13 @@ def train_main(
     best_val_acc = 0.0
     best_val_auc = 0.0
     since = time.time()
+
+    # CSV logging
+    csv_path = save_path.replace(".pth", "_training_log.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss, running_correct, running_total = 0.0, 0, 0
@@ -460,6 +589,11 @@ def train_main(
         train_acc = running_correct / running_total
 
         val_loss, val_acc, val_auc, _, _, _ = evaluate(model, val_loader, device)
+
+        # Log to CSV
+        with open(csv_path, "a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
 
         print(
             f"Epoch {epoch:03d}/{epochs} | Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
@@ -525,9 +659,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="PointNet++ for Aneurysm Rupture (Geometry Only)")
     parser.add_argument("--root_dir", type=str, default="data", help="Data directory")
-    parser.add_argument("--epochs", type=int, default=500, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=200, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument(
+        "--target_n", type=int, default=8192, help="Target number of points per sample"
+    )
     parser.add_argument("--val_fraction", type=float, default=0.2, help="Validation fraction")
     parser.add_argument("--num_workers", type=int, default=2, help="Data loader workers")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -546,6 +683,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"Epochs: {args.epochs}")
     print(f"Batch Size: {args.batch_size}")
+    print(f"Target Points: {args.target_n}")
     print(f"K-Fold: {args.kfold if args.kfold > 0 else 'Single split'}")
     print("=" * 60)
 
@@ -556,6 +694,7 @@ if __name__ == "__main__":
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
+            target_n=args.target_n,
             num_workers=args.num_workers,
             seed=args.seed,
             save_dir=args.kfold_save_dir,
@@ -566,6 +705,7 @@ if __name__ == "__main__":
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
+            target_n=args.target_n,
             val_fraction=args.val_fraction,
             num_workers=args.num_workers,
             seed=args.seed,

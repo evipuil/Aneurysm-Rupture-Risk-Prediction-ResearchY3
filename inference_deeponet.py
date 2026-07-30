@@ -1,4 +1,4 @@
-# Version 1 source snapshot
+# Version 2 source snapshot
 import csv
 import logging
 import os

@@ -1,4 +1,4 @@
-# Version 1 source snapshot
+# Version 2 source snapshot
 """
 pinn_correction_batch.py
 

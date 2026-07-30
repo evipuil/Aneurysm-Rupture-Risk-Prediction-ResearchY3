@@ -1,4 +1,4 @@
-# Version 1 runtime dependencies
+# Version 2 runtime dependencies
 joblib
 einops
 matplotlib
