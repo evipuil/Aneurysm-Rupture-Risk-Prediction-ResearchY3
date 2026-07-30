@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 2 source snapshot
+# Version 3 source snapshot
 # train3.sh - Training Script 3: Clinical Only Model
 #
 # This script runs the Clinical Only Model training.

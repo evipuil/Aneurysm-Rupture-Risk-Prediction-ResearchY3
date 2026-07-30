@@ -1,4 +1,4 @@
-# Version 2 source snapshot
+# Version 3 source snapshot
 """
 batch_vtp_inference.py
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 2 source snapshot
+# Version 3 source snapshot
 """
 gnn_rupture_classification.py
 

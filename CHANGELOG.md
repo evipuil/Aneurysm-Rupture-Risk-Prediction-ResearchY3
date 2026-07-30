@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 3
+
+Source snapshot: February 8, 2026.
+
+- Added a comprehensive rupture model spanning geometry, flow, and clinical inputs.
+- Added von Mises repair and velocity-field visualization utilities.
+- Expanded the combined classifier while retaining the Version 2 experiment suite.
+
 ## Version 2
 
 Source snapshot: February 1, 2026.

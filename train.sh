@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 2 source snapshot
+# Version 3 source snapshot
 # train.sh - Run all rupture classification models
 #
 # This script runs all model architectures for aneurysm rupture classification:

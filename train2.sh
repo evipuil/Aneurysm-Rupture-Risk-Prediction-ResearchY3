@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 2 source snapshot
+# Version 3 source snapshot
 # train2.sh - Training Script 2: Late Fusion Model
 #
 # This script runs the Late Fusion Model (Geometry + Hemodynamics + Clinical) training.

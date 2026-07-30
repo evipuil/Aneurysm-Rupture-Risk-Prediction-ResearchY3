@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 2 source snapshot
+# Version 3 source snapshot
 """
 multichannel_pointnet_rupture.py
 

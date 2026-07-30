@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version 2 source snapshot
+# Version 3 source snapshot
 """
 combined_rupture_classification.py
 
@@ -85,7 +85,7 @@ class FocalLoss(nn.Module):
         return focal_loss
 
 
-# Utils: Point Cloud Operations
+# Utils: Point Cloud Operations (Corrected PointNet++ Ops)
 def index_points(points: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
     """
     Input:
@@ -127,6 +127,92 @@ def farthest_point_sample(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
     return centroids
 
 
+def square_distance(src, dst):
+    """
+    Calculate Euclid distance between each two points.
+    src^T * dst = xn * xm + yn * ym + zn * zm
+    sum(src^2, dim=-1) = xn*xn + yn*yn + zn*zn;
+    sum(dst^2, dim=-1) = xm*xm + ym*ym + zm*zm;
+    dist = (xn-xm)^2 + (yn-ym)^2 + (zn-zm)^2
+         = sum(src**2) + sum(dst**2) - 2*src^T*dst
+    """
+    B, N, _ = src.shape
+    _, M, _ = dst.shape
+    dist = -2 * torch.matmul(src, dst.permute(0, 2, 1))
+    dist += torch.sum(src**2, -1).view(B, N, 1)
+    dist += torch.sum(dst**2, -1).view(B, 1, M)
+    return dist
+
+
+def query_ball_point(radius, nsample, xyz, new_xyz):
+    """
+    Input:
+        radius: local region radius
+        nsample: max sample number in local region
+        xyz: all points, [B, N, 3]
+        new_xyz: query points, [B, S, 3]
+    Output:
+        group_idx: grouped points index, [B, S, nsample]
+    """
+    device = xyz.device
+    B, N, C = xyz.shape
+    _, S, _ = new_xyz.shape
+    group_idx = torch.arange(N, dtype=torch.long, device=device).view(1, 1, N).repeat([B, S, 1])
+    sqrdists = square_distance(new_xyz, xyz)
+    group_idx[sqrdists > radius**2] = N
+    group_idx = group_idx.sort(dim=-1)[0][:, :, :nsample]
+    group_first = group_idx[:, :, 0].view(B, S, 1).repeat([1, 1, nsample])
+    mask = group_idx == N
+    group_idx[mask] = group_first[mask]
+    return group_idx
+
+
+def sample_and_group(npoint, radius, nsample, xyz, points):
+    """
+    Input:
+        npoint:
+        radius:
+        nsample:
+        xyz: input points position data, [B, N, 3]
+        points: input points data, [B, N, D]
+    """
+    B, N, C = xyz.shape
+    S = npoint
+
+    fps_idx = farthest_point_sample(xyz, npoint)  # [B, npoint, C]
+    new_xyz = index_points(xyz, fps_idx)
+    idx = query_ball_point(radius, nsample, xyz, new_xyz)
+    grouped_xyz = index_points(xyz, idx)  # [B, npoint, nsample, C]
+    grouped_xyz_norm = grouped_xyz - new_xyz.view(B, S, 1, C)
+
+    if points is not None:
+        grouped_points = index_points(points, idx)
+        new_points = torch.cat(
+            [grouped_xyz_norm, grouped_points], dim=-1
+        )  # [B, npoint, nsample, C+D]
+    else:
+        new_points = grouped_xyz_norm
+
+    return new_points, new_xyz, fps_idx
+
+
+def sample_and_group_all(xyz, points):
+    """
+    Input:
+        xyz: input points position data, [B, N, 3]
+        points: input points data, [B, N, D]
+    """
+    device = xyz.device
+    B, N, C = xyz.shape
+    new_xyz = torch.zeros(B, 1, C).to(device)
+    grouped_xyz = xyz.view(B, 1, N, C)
+    if points is not None:
+        new_points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)
+    else:
+        new_points = grouped_xyz
+    return new_xyz, new_points
+
+
 # Dataset
 class CombinedAneurysmDataset(Dataset):
     """
@@ -141,7 +227,7 @@ class CombinedAneurysmDataset(Dataset):
     def __init__(
         self,
         file_label_pairs: List[Tuple[str, int]],
-        target_n: int = 1024,
+        target_n: int = 8192,
         mode: str = "combined",  # "geometry", "hemodynamics", "combined"
         augment: bool = False,
         normalize_xyz: bool = True,
@@ -174,21 +260,67 @@ class CombinedAneurysmDataset(Dataset):
 
         # Load CSV data
         try:
+            # Robust column detection
+            with open(path, "r", encoding="utf-8") as f:
+                header = f.readline().strip().split(",")
+
+            headers = [h.strip().lower() for h in header]
+
+            # 1. Coordinate Indices (x, y, z)
+            # Prioritize exact match, fallback to 0,1,2
+            try:
+                x_idx = headers.index("x")
+                y_idx = headers.index("y")
+                z_idx = headers.index("z")
+            except ValueError:
+                x_idx, y_idx, z_idx = 0, 1, 2
+
+            feature_indices = []
+
+            # 2. Feature Indices (tawss, osi, von_mises)
+            # Prioritize exact match with pinn_correction_batch.py format
+
+            # TAWSS
+            if "tawss" in headers:
+                feature_indices.append(headers.index("tawss"))
+            else:
+                # Fallback: substring match or default index 3
+                feature_indices.append(next((i for i, h in enumerate(headers) if "tawss" in h), 3))
+
+            # OSI
+            if "osi" in headers:
+                feature_indices.append(headers.index("osi"))
+            else:
+                # Fallback: substring match or default index 4
+                feature_indices.append(next((i for i, h in enumerate(headers) if "osi" in h), 4))
+
+            # Von Mises
+            if "von_mises" in headers:
+                feature_indices.append(headers.index("von_mises"))
+            else:
+                # Fallback: substring match ('von', 'mises') or default index 5
+                feature_indices.append(
+                    next((i for i, h in enumerate(headers) if "von" in h or "mises" in h), 5)
+                )
+
             data = np.loadtxt(path, delimiter=",", skiprows=1)
+
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+
+            # Extract based on found indices
+            # Handle out of bounds if file is malformed relative to headers
+            max_idx = max(x_idx, y_idx, z_idx, *feature_indices)
+            if data.shape[1] <= max_idx:
+                # padding if needed
+                data = np.pad(data, ((0, 0), (0, max_idx - data.shape[1] + 1)))
+
+            pts = data[:, [x_idx, y_idx, z_idx]].astype(np.float32)
+            feats = data[:, feature_indices].astype(np.float32)
+
         except Exception as e:
             print(f"[ERROR] Failed to load {path}: {e}")
             return self._dummy_sample(label, path)
-
-        if data.ndim == 1:
-            data = data.reshape(1, -1)
-
-        if data.shape[1] < 6:
-            print(f"[WARNING] Insufficient columns in {path}")
-            data = np.pad(data, ((0, 0), (0, 6 - data.shape[1])))
-
-        # Extract coordinates and features
-        pts = data[:, :3].astype(np.float32)
-        feats = data[:, 3:6].astype(np.float32)  # tawss, osi, von_mises
 
         # Compute global features before processing (raw values)
         if self.add_global_features:
@@ -381,54 +513,69 @@ def combined_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
 
 # Model Components
 class PointNetSetAbstraction(nn.Module):
-    """Set Abstraction module for PointNet++ (simplified version that works well)."""
+    """Set Abstraction layer for PointNet++."""
 
-    def __init__(self, npoint: Optional[int], in_channel: int, mlp: List[int]):
-        super().__init__()
+    def __init__(
+        self,
+        npoint: Optional[int],
+        radius: Optional[float],
+        nsample: Optional[int],
+        in_channel: int,
+        mlp: List[int],
+        group_all: bool = False,
+    ):
+        super(PointNetSetAbstraction, self).__init__()
         self.npoint = npoint
-
+        self.radius = radius
+        self.nsample = nsample
+        self.group_all = group_all
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
-        last_ch = in_channel
-        for out_ch in mlp:
-            self.mlp_convs.append(nn.Conv1d(last_ch, out_ch, 1))
-            self.mlp_bns.append(nn.BatchNorm1d(out_ch))
-            last_ch = out_ch
+        last_channel = in_channel
+        for out_channel in mlp:
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            last_channel = out_channel
 
     def forward(self, xyz: torch.Tensor, points: Optional[torch.Tensor] = None):
         """
-        Args:
-            xyz: (B, N, 3) point coordinates
-            points: (B, C, N) point features (or None)
-        Returns:
-            new_points: (B, mlp[-1], npoint) abstracted features
-            new_xyz: (B, npoint, 3) sampled coordinates
+        Input:
+            xyz: input points position data, [B, N, 3]
+            points: input points data, [B, N, D]
+        Return:
+            new_points: sampled points feature data, [B, D', S] -> note: permuted to channel last in this impl? No, original was B,C,S
         """
-        B, N, _ = xyz.shape
+        # Ensure points are B, N, C expected by sample_and_group
+        if points is not None:
+            # points coming in might be B, C, N or B, N, C depending on previous layers
+            # In this script, we generally use B,N,C for xyz, but features might be permuted
+            # Let's standardize: we expect inputs to sample_and_group as B,N,C
+            if points.shape[2] == xyz.shape[1] and points.shape[1] != xyz.shape[1]:
+                # It is B, C, N
+                points = points.permute(0, 2, 1)
 
-        if self.npoint is not None:
-            idx = farthest_point_sample(xyz, self.npoint)
-            new_xyz = index_points(xyz, idx)
+        if self.group_all:
+            new_xyz, new_points = sample_and_group_all(xyz, points)
         else:
-            idx = None
-            new_xyz = torch.mean(xyz, dim=1, keepdim=True)
+            new_points, new_xyz, _ = sample_and_group(
+                self.npoint, self.radius, self.nsample, xyz, points
+            )
 
-        if points is None:
-            feats = xyz
-        else:
-            feats = points.permute(0, 2, 1).contiguous()  # B, N, C
+        # new_points: (B, npoint, nsample, C+D)
+        new_points = new_points.permute(0, 3, 2, 1)  # [B, C+D, nsample, npoint]
 
-        if self.npoint is not None:
-            new_feats = index_points(feats, idx)
-        else:
-            new_feats = feats.mean(dim=1, keepdim=True)
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            new_points = F.relu(bn(conv(new_points)))
 
-        x = new_feats.permute(0, 2, 1).contiguous()  # B, C, S
+        new_points = torch.max(new_points, 2)[0]  # [B, Out, npoint]
 
-        for conv, bn in zip(self.mlp_convs, self.mlp_bns):
-            x = F.relu(bn(conv(x)))
+        # Original script expects: B, C, S (npoint) output?
+        # Let's check SetAbstraction usage.
+        # Yes, return expects: x, new_xyz
+        # x should be B, C, npoint
 
-        return x, new_xyz
+        return new_points, new_xyz
 
 
 # Model Architectures
@@ -437,12 +584,27 @@ class GeometryOnlyModel(nn.Module):
     Geometry-only PointNet++ (mimics the working model structure).
     """
 
-    def __init__(self, num_classes: int = 2, dropout: float = 0.5):
+    def __init__(self, num_classes: int = 2, dropout: float = 0.5, base_points: int = 512):
         super().__init__()
 
-        self.sa1 = PointNetSetAbstraction(npoint=512, in_channel=3, mlp=[64, 64, 128])
-        self.sa2 = PointNetSetAbstraction(npoint=128, in_channel=128, mlp=[128, 128, 256])
-        self.sa3 = PointNetSetAbstraction(npoint=None, in_channel=256, mlp=[256, 512, 1024])
+        # radius settings adapted for unit sphere
+        # sa1: npoint=512, radius=0.2, nsample=32, in=3+0=3
+        self.sa1 = PointNetSetAbstraction(
+            npoint=base_points, radius=0.2, nsample=32, in_channel=3, mlp=[64, 64, 128]
+        )
+        # sa2: npoint=128, radius=0.4, nsample=64, in=3+128=131
+        self.sa2 = PointNetSetAbstraction(
+            npoint=base_points // 4, radius=0.4, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256]
+        )
+        # sa3: global, in=3+256=259
+        self.sa3 = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=256 + 3,
+            mlp=[256, 512, 1024],
+            group_all=True,
+        )
 
         self.fc1 = nn.Linear(1024, 512)
         self.bn1 = nn.BatchNorm1d(512)
@@ -460,7 +622,7 @@ class GeometryOnlyModel(nn.Module):
         l2_pts, l2_xyz = self.sa2(l1_xyz, l1_pts)
         l3_pts, l3_xyz = self.sa3(l2_xyz, l2_pts)
 
-        x = F.adaptive_max_pool1d(l3_pts, 1).view(B, -1)
+        x = l3_pts.view(B, 1024)
 
         x = F.relu(self.bn1(self.fc1(x)))
         x = self.drop1(x)
@@ -476,13 +638,30 @@ class HemodynamicsOnlyModel(nn.Module):
     Hemodynamics-only model using the same PointNet++ structure.
     """
 
-    def __init__(self, num_classes: int = 2, dropout: float = 0.5, global_feature_dim: int = 23):
+    def __init__(
+        self,
+        num_classes: int = 2,
+        dropout: float = 0.5,
+        global_feature_dim: int = 23,
+        base_points: int = 512,
+    ):
         super().__init__()
 
-        # Use hemodynamics as input features
-        self.sa1 = PointNetSetAbstraction(npoint=512, in_channel=3, mlp=[64, 64, 128])
-        self.sa2 = PointNetSetAbstraction(npoint=128, in_channel=128, mlp=[128, 128, 256])
-        self.sa3 = PointNetSetAbstraction(npoint=None, in_channel=256, mlp=[256, 512, 1024])
+        # Use hemodynamics as input features. in=3(xyz)+3(feats)=6
+        self.sa1 = PointNetSetAbstraction(
+            npoint=base_points, radius=0.2, nsample=32, in_channel=6, mlp=[64, 64, 128]
+        )
+        self.sa2 = PointNetSetAbstraction(
+            npoint=base_points // 4, radius=0.4, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256]
+        )
+        self.sa3 = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=256 + 3,
+            mlp=[256, 512, 1024],
+            group_all=True,
+        )
 
         # Global feature projection
         self.global_proj = nn.Sequential(
@@ -498,18 +677,17 @@ class HemodynamicsOnlyModel(nn.Module):
         self.fc3 = nn.Linear(256, num_classes)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        xyz = batch["xyz"]  # B, N, 3 - use for FPS sampling
-        feats = batch["features"]  # B, N, 3 - hemodynamics
+        xyz = batch["xyz"]  # B, N, 3
+        feats = batch["features"]  # B, N, 3
         global_feats = batch["global_features"]  # B, 23
         B = xyz.shape[0]
 
-        # Use hemodynamics as input, xyz for sampling structure
-        # We'll create a combined representation
-        l1_pts, l1_xyz = self.sa1(xyz, feats.permute(0, 2, 1))
+        # feats is passed as 'points' to sample_and_group
+        l1_pts, l1_xyz = self.sa1(xyz, feats)
         l2_pts, l2_xyz = self.sa2(l1_xyz, l1_pts)
         l3_pts, l3_xyz = self.sa3(l2_xyz, l2_pts)
 
-        x = F.adaptive_max_pool1d(l3_pts, 1).view(B, -1)
+        x = l3_pts.view(B, 1024)
 
         # Add global features
         global_proj = self.global_proj(global_feats)
@@ -529,13 +707,33 @@ class EarlyFusionModel(nn.Module):
     Early fusion: concatenate xyz + hemodynamics at input.
     """
 
-    def __init__(self, num_classes: int = 2, dropout: float = 0.5, global_feature_dim: int = 23):
+    def __init__(
+        self,
+        num_classes: int = 2,
+        dropout: float = 0.5,
+        global_feature_dim: int = 23,
+        base_points: int = 512,
+    ):
         super().__init__()
 
-        # 6 input channels: xyz (3) + hemodynamics (3)
-        self.sa1 = PointNetSetAbstraction(npoint=512, in_channel=6, mlp=[64, 64, 128])
-        self.sa2 = PointNetSetAbstraction(npoint=128, in_channel=128, mlp=[128, 128, 256])
-        self.sa3 = PointNetSetAbstraction(npoint=None, in_channel=256, mlp=[256, 512, 1024])
+        # 6 input channels: xyz (3) + hemodynamics (3) -> so in_channel = 3(xyz) + 6(cat) = 9?
+        # Actually usually we pass cat(xyz,hemo) as 'points'.
+        # If we concatenate xyz+feats as 'points', we have 3+3=6 dims.
+        # Plus 3 for geometric grouping = 9.
+        self.sa1 = PointNetSetAbstraction(
+            npoint=base_points, radius=0.2, nsample=32, in_channel=3 + 6, mlp=[64, 64, 128]
+        )
+        self.sa2 = PointNetSetAbstraction(
+            npoint=base_points // 4, radius=0.4, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256]
+        )
+        self.sa3 = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=256 + 3,
+            mlp=[256, 512, 1024],
+            group_all=True,
+        )
 
         # Global feature projection
         self.global_proj = nn.Sequential(
@@ -560,11 +758,11 @@ class EarlyFusionModel(nn.Module):
         combined = torch.cat([xyz, feats], dim=2)  # B, N, 6
 
         # First SA uses combined as input
-        l1_pts, l1_xyz = self.sa1(xyz, combined.permute(0, 2, 1))
+        l1_pts, l1_xyz = self.sa1(xyz, combined)
         l2_pts, l2_xyz = self.sa2(l1_xyz, l1_pts)
         l3_pts, l3_xyz = self.sa3(l2_xyz, l2_pts)
 
-        x = F.adaptive_max_pool1d(l3_pts, 1).view(B, -1)
+        x = l3_pts.view(B, 1024)
 
         # Add global features
         global_proj = self.global_proj(global_feats)
@@ -585,18 +783,47 @@ class LateFusionModel(nn.Module):
     fused at the classifier level.
     """
 
-    def __init__(self, num_classes: int = 2, dropout: float = 0.5, global_feature_dim: int = 23):
+    def __init__(
+        self,
+        num_classes: int = 2,
+        dropout: float = 0.5,
+        global_feature_dim: int = 23,
+        base_points: int = 512,
+    ):
         super().__init__()
 
         # Geometry branch (smaller, since it works well)
-        self.geo_sa1 = PointNetSetAbstraction(npoint=512, in_channel=3, mlp=[64, 64, 128])
-        self.geo_sa2 = PointNetSetAbstraction(npoint=128, in_channel=128, mlp=[128, 128, 256])
-        self.geo_sa3 = PointNetSetAbstraction(npoint=None, in_channel=256, mlp=[256, 512])
+        self.geo_sa1 = PointNetSetAbstraction(
+            npoint=base_points, radius=0.2, nsample=32, in_channel=3, mlp=[64, 64, 128]
+        )
+        self.geo_sa2 = PointNetSetAbstraction(
+            npoint=base_points // 4, radius=0.4, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256]
+        )
+        self.geo_sa3 = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=256 + 3,
+            mlp=[256, 512],
+            group_all=True,
+        )
 
-        # Hemodynamics branch (smaller)
-        self.hemo_sa1 = PointNetSetAbstraction(npoint=512, in_channel=3, mlp=[32, 32, 64])
-        self.hemo_sa2 = PointNetSetAbstraction(npoint=128, in_channel=64, mlp=[64, 64, 128])
-        self.hemo_sa3 = PointNetSetAbstraction(npoint=None, in_channel=128, mlp=[128, 256])
+        # Hemodynamics branch
+        # Input: xyz (3) + feats (3) = 6.
+        self.hemo_sa1 = PointNetSetAbstraction(
+            npoint=base_points, radius=0.2, nsample=32, in_channel=6, mlp=[32, 32, 64]
+        )
+        self.hemo_sa2 = PointNetSetAbstraction(
+            npoint=base_points // 4, radius=0.4, nsample=64, in_channel=64 + 3, mlp=[64, 64, 128]
+        )
+        self.hemo_sa3 = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=128 + 3,
+            mlp=[128, 256],
+            group_all=True,
+        )  # Output 256
 
         # Global feature projection
         self.global_proj = nn.Sequential(
@@ -622,13 +849,13 @@ class LateFusionModel(nn.Module):
         g1_pts, g1_xyz = self.geo_sa1(xyz, None)
         g2_pts, g2_xyz = self.geo_sa2(g1_xyz, g1_pts)
         g3_pts, g3_xyz = self.geo_sa3(g2_xyz, g2_pts)
-        geo_feat = F.adaptive_max_pool1d(g3_pts, 1).view(B, -1)  # B, 512
+        geo_feat = g3_pts.view(B, 512)
 
         # Hemodynamics branch
-        h1_pts, h1_xyz = self.hemo_sa1(xyz, feats.permute(0, 2, 1))
+        h1_pts, h1_xyz = self.hemo_sa1(xyz, feats)
         h2_pts, h2_xyz = self.hemo_sa2(h1_xyz, h1_pts)
         h3_pts, h3_xyz = self.hemo_sa3(h2_xyz, h2_pts)
-        hemo_feat = F.adaptive_max_pool1d(h3_pts, 1).view(B, -1)  # B, 256
+        hemo_feat = h3_pts.view(B, 256)
 
         # Global features
         global_proj = self.global_proj(global_feats)  # B, 64
@@ -650,24 +877,52 @@ class AttentionFusionModel(nn.Module):
     Attention-based fusion: cross-attention between geometry and hemodynamics features.
     """
 
-    def __init__(self, num_classes: int = 2, dropout: float = 0.5, global_feature_dim: int = 23):
+    def __init__(
+        self,
+        num_classes: int = 2,
+        dropout: float = 0.5,
+        global_feature_dim: int = 23,
+        base_points: int = 512,
+    ):
         super().__init__()
 
         # Geometry branch
-        self.geo_sa1 = PointNetSetAbstraction(npoint=256, in_channel=3, mlp=[64, 64, 128])
-        self.geo_sa2 = PointNetSetAbstraction(npoint=64, in_channel=128, mlp=[128, 128, 256])
+        # Attention requires denser sampling, but O(N^2) limits us.
+        # We use base_points // 2 for first layer and base_points // 8 for attention layer
+        # Standard: 512 -> 256, 64
+
+        l1_pts = base_points // 2
+        l2_pts = base_points // 8
+
+        self.geo_sa1 = PointNetSetAbstraction(
+            npoint=l1_pts, radius=0.2, nsample=32, in_channel=3, mlp=[64, 64, 128]
+        )
+        self.geo_sa2 = PointNetSetAbstraction(
+            npoint=l2_pts, radius=0.4, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256]
+        )
 
         # Hemodynamics branch
-        self.hemo_sa1 = PointNetSetAbstraction(npoint=256, in_channel=3, mlp=[64, 64, 128])
-        self.hemo_sa2 = PointNetSetAbstraction(npoint=64, in_channel=128, mlp=[128, 128, 256])
+        self.hemo_sa1 = PointNetSetAbstraction(
+            npoint=l1_pts, radius=0.2, nsample=32, in_channel=6, mlp=[64, 64, 128]
+        )
+        self.hemo_sa2 = PointNetSetAbstraction(
+            npoint=l2_pts, radius=0.4, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256]
+        )
 
         # Cross-attention
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=256, num_heads=4, dropout=dropout, batch_first=True
         )
 
-        # Final SA
-        self.final_sa = PointNetSetAbstraction(npoint=None, in_channel=512, mlp=[512, 512, 1024])
+        # Final SA - input is 512 (geo+attn) + 3 (xyz)
+        self.final_sa = PointNetSetAbstraction(
+            npoint=None,
+            radius=None,
+            nsample=None,
+            in_channel=512 + 3,
+            mlp=[512, 512, 1024],
+            group_all=True,
+        )
 
         # Global feature projection
         self.global_proj = nn.Sequential(
@@ -694,21 +949,23 @@ class AttentionFusionModel(nn.Module):
         g2_pts, g2_xyz = self.geo_sa2(g1_xyz, g1_pts)  # B, 256, 64
 
         # Hemodynamics branch
-        h1_pts, h1_xyz = self.hemo_sa1(xyz, feats.permute(0, 2, 1))
+        h1_pts, h1_xyz = self.hemo_sa1(xyz, feats)
         h2_pts, h2_xyz = self.hemo_sa2(h1_xyz, h1_pts)  # B, 256, 64
 
+        # Permute for attention (Batch, Seq, Feature)
+        geo_seq = g2_pts.permute(0, 2, 1)  # B, npoint, C
+        hemo_seq = h2_pts.permute(0, 2, 1)  # B, npoint, C
+
         # Cross-attention: geometry attends to hemodynamics
-        geo_seq = g2_pts.permute(0, 2, 1)  # B, 64, 256
-        hemo_seq = h2_pts.permute(0, 2, 1)  # B, 64, 256
+        attn_out, _ = self.cross_attn(geo_seq, hemo_seq, hemo_seq)  # B, npoint, C
 
-        attn_out, _ = self.cross_attn(geo_seq, hemo_seq, hemo_seq)  # B, 64, 256
+        # Combine: Concatenate attention output with geometry features
+        combined_seq = torch.cat([geo_seq, attn_out], dim=2)  # B, npoint, 512
+        combined_pts = combined_seq.permute(0, 2, 1)  # B, 512, npoint
 
-        # Combine
-        combined = torch.cat([g2_pts, attn_out.permute(0, 2, 1)], dim=1)  # B, 512, 64
-
-        # Dummy xyz for final SA (use geometry positions)
-        final_pts, _ = self.final_sa(g2_xyz, combined)
-        x = F.adaptive_max_pool1d(final_pts, 1).view(B, -1)
+        # Global pooling via Set Abstraction
+        final_pts, _ = self.final_sa(g2_xyz, combined_pts)
+        x = final_pts.view(B, 1024)
 
         # Global features
         global_proj = self.global_proj(global_feats)
@@ -878,7 +1135,7 @@ def train_one_epoch(
 
 def evaluate(
     model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: torch.device
-) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
     """Evaluate model on validation/test set."""
     model.eval()
     running_loss = 0.0
@@ -912,7 +1169,12 @@ def evaluate(
     loss = running_loss / total
     acc = (all_preds == all_labels).sum() / total
 
-    return loss, acc, all_preds, all_labels, all_probs
+    # Calculate confusion matrix for logging
+    # labels=[0, 1] ensures we get 2x2 even if one class is missing in batch
+    cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+
+    return loss, acc, all_preds, all_labels, all_probs, (tn, fp, fn, tp)
 
 
 def print_metrics(labels: np.ndarray, preds: np.ndarray, probs: np.ndarray, phase: str = ""):
@@ -944,18 +1206,32 @@ def print_metrics(labels: np.ndarray, preds: np.ndarray, probs: np.ndarray, phas
     print(f"Specificity: {specificity:.4f}")
 
 
-def create_model(model_type: str, num_classes: int = 2, dropout: float = 0.5) -> nn.Module:
+def create_model(
+    model_type: str, num_classes: int = 2, dropout: float = 0.5, target_n: int = 1024
+) -> nn.Module:
     """Create model based on type."""
+
+    # Adapt scale for high-resolution input
+    if target_n >= 4096:
+        base_points = 1024
+        print(f"[INFO] High-resolution mode: base_points={base_points}")
+    else:
+        base_points = 512
+
     if model_type == "geometry":
-        return GeometryOnlyModel(num_classes=num_classes, dropout=dropout)
+        return GeometryOnlyModel(num_classes=num_classes, dropout=dropout, base_points=base_points)
     elif model_type == "hemodynamics":
-        return HemodynamicsOnlyModel(num_classes=num_classes, dropout=dropout)
+        return HemodynamicsOnlyModel(
+            num_classes=num_classes, dropout=dropout, base_points=base_points
+        )
     elif model_type == "early_fusion":
-        return EarlyFusionModel(num_classes=num_classes, dropout=dropout)
+        return EarlyFusionModel(num_classes=num_classes, dropout=dropout, base_points=base_points)
     elif model_type == "late_fusion":
-        return LateFusionModel(num_classes=num_classes, dropout=dropout)
+        return LateFusionModel(num_classes=num_classes, dropout=dropout, base_points=base_points)
     elif model_type == "attention":
-        return AttentionFusionModel(num_classes=num_classes, dropout=dropout)
+        return AttentionFusionModel(
+            num_classes=num_classes, dropout=dropout, base_points=base_points
+        )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -968,7 +1244,7 @@ def train_kfold(
     batch_size: int = 16,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
-    target_n: int = 1024,
+    target_n: int = 8192,
     model_type: str = "late_fusion",
     save_dir: str = "kfold_combined_models",
     seed: int = 42,
@@ -1061,7 +1337,7 @@ def train_kfold(
             collate_fn=combined_collate_fn,
         )
 
-        model = create_model(model_type, num_classes=2, dropout=dropout)
+        model = create_model(model_type, num_classes=2, dropout=dropout, target_n=target_n)
         model = model.to(device)
 
         # Loss
@@ -1081,13 +1357,26 @@ def train_kfold(
         csv_path = os.path.join(save_dir, f"fold{fold + 1}_training_log.csv")
         with open(csv_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+            writer.writerow(
+                [
+                    "epoch",
+                    "train_loss",
+                    "train_acc",
+                    "val_loss",
+                    "val_acc",
+                    "val_auc",
+                    "tn",
+                    "fp",
+                    "fn",
+                    "tp",
+                ]
+            )
 
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = train_one_epoch(
                 model, train_loader, optimizer, criterion, device
             )
-            val_loss, val_acc, val_preds, val_labels_ep, val_probs = evaluate(
+            val_loss, val_acc, val_preds, val_labels_ep, val_probs, (tn, fp, fn, tp) = evaluate(
                 model, val_loader, criterion, device
             )
             val_auc = (
@@ -1100,11 +1389,13 @@ def train_kfold(
             # Log to CSV
             with open(csv_path, "a", newline="") as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
+                writer.writerow(
+                    [epoch, train_loss, train_acc, val_loss, val_acc, val_auc, tn, fp, fn, tp]
+                )
 
             if epoch % 20 == 0 or val_auc > best_val_auc:
                 print(
-                    f"  Epoch {epoch:03d} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+                    f"  Epoch {epoch:03d} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} AUC: {val_auc:.4f} | CM: [{tn} {fp} / {fn} {tp}]"
                 )
 
             # Track best by accuracy (like the working model)
@@ -1123,7 +1414,7 @@ def train_kfold(
         model.load_state_dict(
             torch.load(os.path.join(save_dir, f"fold{fold + 1}_best.pth"), weights_only=True)
         )
-        _, _, val_preds, val_labels_final, val_probs_final = evaluate(
+        _, _, val_preds, val_labels_final, val_probs_final, (tn, fp, fn, tp) = evaluate(
             model, val_loader, criterion, device
         )
 
@@ -1176,7 +1467,7 @@ def train_model(
     weight_decay: float = 1e-4,
     val_fraction: float = 0.2,
     num_workers: int = 2,
-    target_n: int = 1024,
+    target_n: int = 8192,
     model_type: str = "late_fusion",
     save_path: str = "best_combined_model.pth",
     seed: int = 42,
@@ -1239,7 +1530,7 @@ def train_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
 
-    model = create_model(model_type, num_classes=2, dropout=dropout)
+    model = create_model(model_type, num_classes=2, dropout=dropout, target_n=target_n)
     model = model.to(device)
     print(f"[INFO] Model: {model_type}")
     print(f"[INFO] Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -1263,13 +1554,26 @@ def train_model(
     csv_path = save_path.replace(".pth", "_training_log.csv")
     with open(csv_path, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_auc"])
+        writer.writerow(
+            [
+                "epoch",
+                "train_loss",
+                "train_acc",
+                "val_loss",
+                "val_acc",
+                "val_auc",
+                "tn",
+                "fp",
+                "fn",
+                "tp",
+            ]
+        )
 
     start_time = time.time()
 
     for epoch in range(1, epochs + 1):
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        val_loss, val_acc, val_preds, val_labels, val_probs = evaluate(
+        val_loss, val_acc, val_preds, val_labels, val_probs, (tn, fp, fn, tp) = evaluate(
             model, val_loader, criterion, device
         )
         val_auc = roc_auc_score(val_labels, val_probs) if len(np.unique(val_labels)) > 1 else 0.5
@@ -1279,12 +1583,14 @@ def train_model(
         # Log to CSV
         with open(csv_path, "a", newline="") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow([epoch, train_loss, train_acc, val_loss, val_acc, val_auc])
+            writer.writerow(
+                [epoch, train_loss, train_acc, val_loss, val_acc, val_auc, tn, fp, fn, tp]
+            )
 
         print(
             f"Epoch {epoch:03d}/{epochs} | "
             f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
-            f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+            f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} AUC: {val_auc:.4f} | CM: [{tn} {fp} / {fn} {tp}]"
         )
 
         if val_acc > best_val_acc:
@@ -1318,7 +1624,7 @@ def train_model(
     checkpoint = torch.load(save_path, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    _, _, val_preds, val_labels, val_probs = evaluate(model, val_loader, criterion, device)
+    _, _, val_preds, val_labels, val_probs, _ = evaluate(model, val_loader, criterion, device)
     print_metrics(val_labels, val_preds, val_probs, "Final Validation")
 
     return model
@@ -1341,7 +1647,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument(
-        "--target_n", type=int, default=1024, help="Target number of points per sample"
+        "--target_n", type=int, default=8192, help="Target number of points per sample"
     )
     parser.add_argument(
         "--early_stopping", type=int, default=30, help="Early stopping patience (epochs)"

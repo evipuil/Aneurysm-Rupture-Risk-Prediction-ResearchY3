@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 2 source snapshot
+# Version 3 source snapshot
 # train4.sh - Training Script 4: Geometry-only PointNet++
 #
 # This script runs the Geometry-only PointNet++ Model training.
