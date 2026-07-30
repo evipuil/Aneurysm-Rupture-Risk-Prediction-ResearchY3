@@ -1,25 +1,25 @@
 # Aneurysm rupture model history
 
-This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 4. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 4**.
+This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 5. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 5**.
 
-The Version 4 source snapshot dates to February 12, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
+The Version 5 source snapshot dates to March 14-29, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
 
-## Version 4
+## Version 5
 
-Smaller model-specific trainers and focused execution scripts.
+Hardened modular trainers, state-aware metrics, and an RRT ensemble variant.
 
-### Changes from Version 3
+### Changes from Version 4
 
-- Replaced the large prototype suite with focused clinical, geometry, flow-geometry, GNN, and ensemble trainers.
-- Shortened the VTP inference and PINN correction paths.
-- Added one launcher per maintained workflow.
+- Added expanded classification metrics and a shared plotting utility.
+- Added the RRT ensemble experiment and its launcher.
+- Added a suite submission script and more consistent early-stopping controls.
 
 ## Code in this snapshot
 
-- Python: `batch_vtp_inference.py`, `neural_networks.py`, `pinn_correction.py`, `train_clinical_age_sex.py`, `train_clinical_only.py`, `train_ensemble.py`, `train_flow_geometry.py`, `train_geometry.py`, `train_gnn.py`
-- Shell: `run_clinical.sh`, `run_ensemble.sh`, `run_flow_geometry.sh`, `run_geometry.sh`, `run_gnn.sh`, `run_pinn_correction.sh`, `run_vtp_inference.sh`
+- Python: `batch_vtp_inference.py`, `neural_networks.py`, `pinn_correction.py`, `plot_metrics.py`, `train_clinical_age_sex.py`, `train_clinical_only.py`, `train_ensemble.py`, `train_ensemble_rrt.py`, `train_flow_geometry.py`, `train_geometry.py`, `train_gnn.py`
+- Shell: `run_clinical.sh`, `run_ensemble.sh`, `run_ensemble_rrt.sh`, `run_flow_geometry.sh`, `run_geometry.sh`, `run_gnn.sh`, `run_pinn_correction.sh`, `run_vtp_inference.sh`, `submit_all.sh`
 
-Every Python and shell source carries a Version 4 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
+Every Python and shell source carries a Version 5 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
 
 ## Setup
 
@@ -45,6 +45,7 @@ Data is intentionally not stored here. Most snapshots expect a metadata CSV with
 | `v2` | February 1, 2026 | Fusion and ensemble experiments with repeatable training launchers |
 | `v3` | February 8, 2026 | Comprehensive multimodal training plus flow-field repair and inspection tools |
 | `v4` | February 12, 2026 | Smaller model-specific trainers and focused execution scripts |
+| `v5` | March 14-29, 2026 | Hardened modular trainers, state-aware metrics, and an RRT ensemble variant |
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed progression. Commit timestamps show the July 2026 import sequence; they do not claim that the original work happened on those commit dates.
 

@@ -1,4 +1,4 @@
-# Version 4 source snapshot
+# Version 5 source snapshot
 import csv
 import os
 import random
@@ -10,7 +10,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader
 
@@ -36,8 +42,9 @@ torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(SEED)
 
-
 # PointNet++ utility functions
+
+
 def index_points(points, idx):
     B = points.shape[0]
     view_shape = list(idx.shape)
@@ -119,6 +126,8 @@ def sample_and_group_all(xyz, points):
 
 
 # Set Abstraction layer
+
+
 class PointNetSetAbstraction(nn.Module):
     def __init__(self, npoint, radius, nsample, in_channel, mlp, group_all=False):
         super().__init__()
@@ -150,6 +159,8 @@ class PointNetSetAbstraction(nn.Module):
 
 
 # Build PointNet++ with flow features (6ch input) + global feature fusion
+
+
 def build_pointnet_flow(global_feature_dim=GLOBAL_FEATURE_DIM):
     # SA1: in_channel = 3 (relative xyz) + 3 (flow features) = 6
     sa1 = PointNetSetAbstraction(512, 0.2, 32, in_channel=6, mlp=[64, 64, 128])
@@ -194,6 +205,8 @@ def forward_pointnet_flow(model, xyz, features, global_feats=None):
 
 
 # Data loading helpers
+
+
 def normalize_points(pts):
     pts = pts - pts.mean(axis=0)
     max_dist = np.max(np.linalg.norm(pts, axis=1))
@@ -348,6 +361,8 @@ def safe_auc(targets, probs):
 
 
 # Build data loaders (load all into memory)
+
+
 def build_flow_batches(file_paths, file_labels, augment, batch_size, shuffle):
     all_pts, all_feats, all_gf, all_labels = [], [], [], []
     for path, label in zip(file_paths, file_labels):
@@ -430,7 +445,7 @@ fold_summaries = []
 
 for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
     train_loader = build_flow_batches(
-        file_paths[train_idx], labels[train_idx], augment=True, batch_size=BATCH_SIZE, shuffle=True
+        file_paths[train_idx], labels[train_idx], augment=False, batch_size=BATCH_SIZE, shuffle=True
     )
     val_loader = build_flow_batches(
         file_paths[val_idx], labels[val_idx], augment=False, batch_size=BATCH_SIZE, shuffle=False
@@ -446,14 +461,6 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     criterion = nn.CrossEntropyLoss(weight=w)
-
-    # Best model tracking
-    best_val_auc = 0.0
-    patience_counter = 0
-    best_v_probs = None
-    best_v_labels = None
-    best_metrics = None
-
     fold_csv = os.path.join(OUTPUT_DIR, f"fold_{fold + 1}_metrics.csv")
     fold_roc_dir = os.path.join(OUTPUT_DIR, f"fold_{fold + 1}_roc")
     os.makedirs(fold_roc_dir, exist_ok=True)
@@ -466,9 +473,11 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
                 "train_loss",
                 "train_acc",
                 "train_auc",
+                "train_pr_auc",
                 "val_loss",
                 "val_acc",
                 "val_auc",
+                "val_pr_auc",
                 "tn",
                 "fp",
                 "fn",
@@ -476,6 +485,12 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
             ]
         )
 
+        early_stop_triggered = False
+        best_val_auc = -1.0
+        patience_counter = 0
+        final_v_probs = []
+        final_v_labels = []
+        final_metrics = {}
         for epoch in range(1, EPOCHS + 1):
             # Train
             model.train()
@@ -496,6 +511,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
             t_loss /= len(train_loader.dataset)
             t_acc = accuracy_score(t_labels, np.array(t_probs) > 0.5)
             t_auc = safe_auc(t_labels, t_probs)
+            t_pr_auc = average_precision_score(t_labels, t_probs) if len(set(t_labels)) > 1 else 0.0
 
             # Validate
             model.eval()
@@ -511,6 +527,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
             v_loss /= len(val_loader.dataset)
             v_acc = accuracy_score(v_labels, np.array(v_probs) > 0.5)
             v_auc = safe_auc(v_labels, v_probs)
+            v_pr_auc = average_precision_score(v_labels, v_probs) if len(set(v_labels)) > 1 else 0.0
             tn, fp, fn, tp = confusion_matrix(v_labels, np.array(v_probs) > 0.5).ravel()
 
             wr.writerow(
@@ -519,16 +536,17 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
                     f"{t_loss:.6f}",
                     f"{t_acc:.4f}",
                     f"{t_auc:.4f}",
+                    f"{t_pr_auc:.4f}",
                     f"{v_loss:.6f}",
                     f"{v_acc:.4f}",
                     f"{v_auc:.4f}",
+                    f"{v_pr_auc:.4f}",
                     tn,
                     fp,
                     fn,
                     tp,
                 ]
             )
-
             # Per-epoch ROC data
             fpr, tpr, thr = roc_curve(v_labels, v_probs)
             pd.DataFrame({"fpr": fpr, "tpr": tpr, "threshold": thr}).to_csv(
@@ -537,51 +555,52 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(file_paths, labels)):
 
             if epoch % 25 == 0 or epoch == 1:
                 print(
-                    f"  Epoch {epoch:3d}  train_auc={t_auc:.4f}  val_auc={v_auc:.4f}  val_acc={v_acc:.4f}"
+                    f"  Epoch {epoch:3d}  train_auc={t_auc:.4f}  "
+                    f"val_auc={v_auc:.4f}  val_acc={v_acc:.4f}"
                 )
 
-            # Best model tracking + early stopping
-            if v_auc > best_val_auc:
-                best_val_auc = v_auc
-                patience_counter = 0
-                best_v_probs = list(v_probs)
-                best_v_labels = list(v_labels)
-                best_metrics = {
-                    "val_loss": v_loss,
-                    "val_acc": v_acc,
-                    "val_auc": v_auc,
-                    "tn": tn,
-                    "fp": fp,
-                    "fn": fn,
-                    "tp": tp,
-                }
-            else:
-                patience_counter += 1
-                if patience_counter >= EARLY_STOP_PATIENCE:
-                    print(f"    Early stopping at epoch {epoch}")
-                    break
+            # Best model tracking + early stopping condition (without breaking)
+            if not early_stop_triggered:
+                if v_auc > best_val_auc:
+                    best_val_auc = v_auc
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= EARLY_STOP_PATIENCE:
+                        print(
+                            f"    Early stopping condition met at epoch {epoch}. "
+                            "Continuing training but locking these metrics."
+                        )
+                        early_stop_triggered = True
+                        final_v_probs = list(v_probs)
+                        final_v_labels = list(v_labels)
+                        final_metrics = {
+                            "val_loss": v_loss,
+                            "val_acc": v_acc,
+                            "val_auc": v_auc,
+                            "tn": tn,
+                            "fp": fp,
+                            "fn": fn,
+                            "tp": tp,
+                        }
 
-    # Use best epoch's predictions for pooling
-    if best_v_probs is not None:
-        pooled_probs.extend(best_v_probs)
-        pooled_targets.extend(best_v_labels)
-        fold_summaries.append({"fold": fold + 1, **best_metrics})
-        print(f"  Best val_auc: {best_metrics['val_auc']:.4f}")
-    else:
-        pooled_probs.extend(v_probs)
-        pooled_targets.extend(v_labels)
-        fold_summaries.append(
-            {
-                "fold": fold + 1,
-                "val_loss": v_loss,
-                "val_acc": v_acc,
-                "val_auc": v_auc,
-                "tn": tn,
-                "fp": fp,
-                "fn": fn,
-                "tp": tp,
-            }
-        )
+    # Use metrics from when early stopping triggered (or final epoch if never triggered)
+    if not early_stop_triggered:
+        final_v_probs = list(v_probs)
+        final_v_labels = list(v_labels)
+        final_metrics = {
+            "val_loss": v_loss,
+            "val_acc": v_acc,
+            "val_auc": v_auc,
+            "tn": tn,
+            "fp": fp,
+            "fn": fn,
+            "tp": tp,
+        }
+
+    pooled_probs.extend(final_v_probs)
+    pooled_targets.extend(final_v_labels)
+    fold_summaries.append({"fold": fold + 1, **final_metrics})
 
 # Fold averages
 sdf = pd.DataFrame(fold_summaries)

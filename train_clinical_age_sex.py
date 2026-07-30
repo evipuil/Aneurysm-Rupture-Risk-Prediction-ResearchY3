@@ -1,4 +1,4 @@
-# Version 4 source snapshot
+# Version 5 source snapshot
 import csv
 import os
 import random
@@ -10,7 +10,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -34,8 +40,9 @@ torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(SEED)
 
-
 # Build MLP (smaller — only 2 input features)
+
+
 def build_clinical_mlp(input_dim):
     return nn.Sequential(
         nn.Linear(input_dim, 64),
@@ -51,6 +58,8 @@ def build_clinical_mlp(input_dim):
 
 
 # Feature engineering (fit on train, transform val)
+
+
 def process_features(df_slice, train_stats=None):
     ages = df_slice["age"].values.astype(np.float32)
     mu = train_stats["age_mean"] if train_stats else ages.mean()
@@ -150,12 +159,13 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(df, targets)):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     criterion = nn.CrossEntropyLoss(weight=w)
 
-    # Best model tracking
-    best_val_auc = 0.0
+    # Early-stopping trigger tracking (save model at trigger epoch, not best spike)
+    best_val_auc = -1.0
     patience_counter = 0
-    best_v_probs = None
-    best_v_labels = None
-    best_metrics = None
+    early_stop_v_probs = None
+    early_stop_v_labels = None
+    early_stop_metrics = None
+    early_stop_epoch = None
 
     fold_csv = os.path.join(OUTPUT_DIR, f"fold_{fold + 1}_metrics.csv")
     fold_roc_dir = os.path.join(OUTPUT_DIR, f"fold_{fold + 1}_roc")
@@ -169,16 +179,18 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(df, targets)):
                 "train_loss",
                 "train_acc",
                 "train_auc",
+                "train_pr_auc",
                 "val_loss",
                 "val_acc",
                 "val_auc",
+                "val_pr_auc",
                 "tn",
                 "fp",
                 "fn",
                 "tp",
             ]
         )
-
+        early_stop_announced = False
         for epoch in range(1, EPOCHS + 1):
             # Train
             model.train()
@@ -198,6 +210,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(df, targets)):
             t_loss /= len(train_loader.dataset)
             t_acc = accuracy_score(t_labels, np.array(t_probs) > 0.5)
             t_auc = safe_auc(t_labels, t_probs)
+            t_pr_auc = average_precision_score(t_labels, t_probs) if len(set(t_labels)) > 1 else 0.0
 
             # Validate
             model.eval()
@@ -213,7 +226,10 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(df, targets)):
             v_loss /= len(val_loader.dataset)
             v_acc = accuracy_score(v_labels, np.array(v_probs) > 0.5)
             v_auc = safe_auc(v_labels, v_probs)
-            tn, fp, fn, tp = confusion_matrix(v_labels, np.array(v_probs) > 0.5).ravel()
+            v_pr_auc = average_precision_score(v_labels, v_probs) if len(set(v_labels)) > 1 else 0.0
+            tn, fp, fn, tp = confusion_matrix(
+                v_labels, np.array(v_probs) > 0.5, labels=[0, 1]
+            ).ravel()
 
             writer.writerow(
                 [
@@ -221,16 +237,17 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(df, targets)):
                     f"{t_loss:.6f}",
                     f"{t_acc:.4f}",
                     f"{t_auc:.4f}",
+                    f"{t_pr_auc:.4f}",
                     f"{v_loss:.6f}",
                     f"{v_acc:.4f}",
                     f"{v_auc:.4f}",
+                    f"{v_pr_auc:.4f}",
                     tn,
                     fp,
                     fn,
                     tp,
                 ]
             )
-
             # Per-epoch ROC curve data
             fpr, tpr, thr = roc_curve(v_labels, v_probs)
             pd.DataFrame({"fpr": fpr, "tpr": tpr, "threshold": thr}).to_csv(
@@ -242,34 +259,50 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(df, targets)):
                     f"  Epoch {epoch:3d}  train_auc={t_auc:.4f}  val_auc={v_auc:.4f}  val_acc={v_acc:.4f}"
                 )
 
-            # Best model tracking + early stopping
+            # Track when early stopping WOULD trigger (run all epochs for full logs)
             if v_auc > best_val_auc:
                 best_val_auc = v_auc
                 patience_counter = 0
-                best_v_probs = list(v_probs)
-                best_v_labels = list(v_labels)
-                best_metrics = {
-                    "val_loss": v_loss,
-                    "val_acc": v_acc,
-                    "val_auc": v_auc,
-                    "tn": tn,
-                    "fp": fp,
-                    "fn": fn,
-                    "tp": tp,
-                }
             else:
                 patience_counter += 1
-                if patience_counter >= EARLY_STOP_PATIENCE:
-                    print(f"    Early stopping at epoch {epoch}")
-                    break
+                if patience_counter >= EARLY_STOP_PATIENCE and not early_stop_announced:
+                    print(
+                        f"    Early-stop patience reached at epoch {epoch}; continuing to log all remaining epochs."
+                    )
+                    early_stop_announced = True
+                if patience_counter >= EARLY_STOP_PATIENCE and early_stop_v_probs is None:
+                    early_stop_v_probs = list(v_probs)
+                    early_stop_v_labels = list(v_labels)
+                    early_stop_metrics = {
+                        "val_loss": v_loss,
+                        "val_acc": v_acc,
+                        "val_auc": v_auc,
+                        "tn": tn,
+                        "fp": fp,
+                        "fn": fn,
+                        "tp": tp,
+                    }
+                    early_stop_epoch = epoch
+                    state = model.state_dict()
+                    torch.save(
+                        state, os.path.join(OUTPUT_DIR, f"early_stop_model_fold_{fold + 1}.pt")
+                    )
+                    # Legacy-compatible filename now points to early-stop snapshot.
+                    torch.save(state, os.path.join(OUTPUT_DIR, f"best_model_fold_{fold + 1}.pt"))
 
-    # Use best epoch's predictions for pooling
-    if best_v_probs is not None:
-        pooled_probs.extend(best_v_probs)
-        pooled_targets.extend(best_v_labels)
-        fold_summaries.append({"fold": fold + 1, **best_metrics})
-        print(f"  Best val_auc: {best_metrics['val_auc']:.4f}")
+    # Use early-stop-trigger epoch predictions for pooling; fallback to final epoch if never triggered.
+    if early_stop_v_probs is not None:
+        pooled_probs.extend(early_stop_v_probs)
+        pooled_targets.extend(early_stop_v_labels)
+        fold_summaries.append({"fold": fold + 1, **early_stop_metrics})
+        print(
+            f"  Using early-stop epoch {early_stop_epoch} metrics  val_auc={early_stop_metrics['val_auc']:.4f}"
+        )
     else:
+        torch.save(
+            model.state_dict(), os.path.join(OUTPUT_DIR, f"early_stop_model_fold_{fold + 1}.pt")
+        )
+        torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, f"best_model_fold_{fold + 1}.pt"))
         pooled_probs.extend(v_probs)
         pooled_targets.extend(v_labels)
         fold_summaries.append(

@@ -25,18 +25,18 @@ from torch.utils.data import DataLoader
 # Configuration
 METADATA_PATH = "metadata.csv"
 DATA_DIR = "predictions/pinn_corrected"
-OUTPUT_DIR = "results_ensemble"
-N_FOLDS = 5
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "results_ensemble_rrt")
+N_FOLDS = int(os.environ.get("N_FOLDS", 5))
 BATCH_SIZE = 8
-EPOCHS = 200
+EPOCHS = int(os.environ.get("EPOCHS", 200))
 LEARNING_RATE = 5e-4
 WEIGHT_DECAY = 1e-3
 SEED = 42
 TARGET_N = 4096
 LABEL_SMOOTHING = 0.1
 EARLY_STOP_PATIENCE = 30
-GLOBAL_FEATURE_DIM = 23
-HEMO_CHANNELS = 8
+GLOBAL_FEATURE_DIM = 28
+HEMO_CHANNELS = 9
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -177,7 +177,7 @@ def build_ensemble(n_locations, hemo_channels=HEMO_CHANNELS, global_feature_dim=
         None, None, None, in_channel=259, mlp=[256, 512, 1024], group_all=True
     )
 
-    # Flow branch: xyz + derived hemodynamics (3 + hemo_channels = 11 ch)
+    # Flow branch: xyz + derived hemodynamics (3 + hemo_channels = 12 ch)
     flow_sa1 = PointNetSetAbstraction(512, 0.2, 32, in_channel=3 + hemo_channels, mlp=[64, 64, 128])
     flow_sa2 = PointNetSetAbstraction(128, 0.4, 64, in_channel=131, mlp=[128, 128, 256])
     flow_sa3 = PointNetSetAbstraction(
@@ -277,10 +277,15 @@ def normalize_features(feats):
 
 
 def compute_global_features(raw_feats, pts):
-    """Compute 23 global summary statistics (hemodynamic + geometric)."""
+    """Compute 28 global summary statistics (hemodynamic + geometric)."""
     tawss = raw_feats[:, 0]
     osi = raw_feats[:, 1]
     von_mises = raw_feats[:, 2]
+    denom = (1.0 - 2.0 * osi) * tawss
+    rrt = np.zeros_like(tawss, dtype=np.float32)
+    valid = np.abs(denom) > 1e-8
+    rrt[valid] = 1.0 / denom[valid]
+    rrt[~np.isfinite(rrt)] = 0.0
 
     features = []
 
@@ -316,6 +321,17 @@ def compute_global_features(raw_feats, pts):
             np.max(von_mises),
             np.percentile(von_mises, 95),
             np.percentile(von_mises, 99),
+        ]
+    )
+
+    # RRT statistics (5): standard formula RRT = 1 / ((1 - 2*OSI) * TAWSS)
+    features.extend(
+        [
+            np.mean(rrt),
+            np.std(rrt),
+            np.max(rrt),
+            np.percentile(rrt, 95),
+            np.sum(rrt > np.percentile(rrt, 90)) / len(rrt),
         ]
     )
 
@@ -364,13 +380,28 @@ def derive_hemo_features(raw_feats):
     tawss = raw_feats[:, 0]
     osi = raw_feats[:, 1]
     von_mises = raw_feats[:, 2]
+    denom = (1.0 - 2.0 * osi) * tawss
+    rrt = np.zeros_like(tawss, dtype=np.float32)
+    valid = np.abs(denom) > 1e-8
+    rrt[valid] = 1.0 / denom[valid]
+    rrt[~np.isfinite(rrt)] = 0.0
     low_tawss = (tawss < np.percentile(tawss, 20)).astype(np.float32)
     high_osi = (osi > 0.2).astype(np.float32)
     combined_stress = tawss * (1 - 2 * osi)
     vm_normalized = von_mises / (np.max(von_mises) + 1e-8)
     risk_score = (high_osi * low_tawss).astype(np.float32)
     return np.stack(
-        [tawss, osi, von_mises, low_tawss, high_osi, combined_stress, vm_normalized, risk_score],
+        [
+            tawss,
+            osi,
+            von_mises,
+            rrt,
+            low_tawss,
+            high_osi,
+            combined_stress,
+            vm_normalized,
+            risk_score,
+        ],
         axis=1,
     ).astype(np.float32)
 
@@ -395,7 +426,7 @@ def load_sample(path, label, target_n=TARGET_N, augment=False):
         # Global features from FULL data (before subsampling)
         gf = compute_global_features(raw_feats, pts)
 
-        # Derive 8 hemodynamic channels
+        # Derive 9 hemodynamic channels (includes RRT)
         derived = derive_hemo_features(raw_feats)
 
         # Resample to target_n

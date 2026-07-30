@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 5
+
+Source snapshot: March 14-29, 2026.
+
+- Added expanded classification metrics and a shared plotting utility.
+- Added the RRT ensemble experiment and its launcher.
+- Added a suite submission script and more consistent early-stopping controls.
+
 ## Version 4
 
 Source snapshot: February 12, 2026.

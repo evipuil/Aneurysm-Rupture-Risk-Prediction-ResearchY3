@@ -1,4 +1,4 @@
-# Version 4 source snapshot
+# Version 5 source snapshot
 import logging
 import os
 import sys
@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pyvista as pv
 import torch
 import torch.autograd as autograd
 import torch.nn as nn
@@ -13,8 +14,6 @@ from scipy.spatial import KDTree
 from tqdm import tqdm
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
-import pyvista as pv
 
 HAS_PYVISTA = True
 
@@ -59,8 +58,9 @@ fh.setFormatter(fmt)
 logger.addHandler(ch)
 logger.addHandler(fh)
 
-
 # Utility: gradients
+
+
 def gradients(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return autograd.grad(
         y, x, grad_outputs=torch.ones_like(y), create_graph=True, retain_graph=True
@@ -123,24 +123,40 @@ def extract_wall_points(vtp_file: Path, n_wall_points: int = DEFAULT_N_WALL):
 
 
 def compute_wss(
-    velocity: torch.Tensor,
-    points: torch.Tensor,
-    wall_points: torch.Tensor,
-    wall_normals: torch.Tensor,
-    mu: float = MU,
+    velocity: torch.Tensor, XT_wall: torch.Tensor, wall_normals: torch.Tensor, mu: float = MU
 ) -> torch.Tensor:
-    tree = KDTree(points.detach().cpu().numpy())
-    distances, indices = tree.query(wall_points.detach().cpu().numpy(), k=5)
-    indices_tensor = torch.tensor(indices, device=velocity.device)
-    nearby_vels = velocity[indices_tensor]
-    distances_tensor = torch.tensor(distances, device=velocity.device, dtype=torch.float32)
-    distances_tensor = distances_tensor.clamp(min=1e-6)
-    avg_vel = nearby_vels.mean(dim=1)
-    avg_dist = distances_tensor.mean(dim=1, keepdim=True)
-    wall_normals_unit = wall_normals / (torch.norm(wall_normals, dim=-1, keepdim=True) + 1e-8)
-    vel_normal = torch.sum(avg_vel * wall_normals_unit, dim=-1, keepdim=True) * wall_normals_unit
-    vel_tangent = avg_vel - vel_normal
-    wss_vector = mu * vel_tangent / avg_dist
+    """Computes WSS strictly utilizing the analytical gradient (autograd) of the PINN, avoiding grid errors"""
+    if velocity.shape[0] != XT_wall.shape[0] or velocity.shape[0] != wall_normals.shape[0]:
+        raise ValueError(
+            f"WSS shape mismatch: velocity={velocity.shape}, XT_wall={XT_wall.shape}, wall_normals={wall_normals.shape}. "
+            "WSS must be computed at wall points only."
+        )
+
+    u = velocity[:, 0:1]
+    v = velocity[:, 1:2]
+    w = velocity[:, 2:3]
+
+    u_g = gradients(u, XT_wall)
+    v_g = gradients(v, XT_wall)
+    w_g = gradients(w, XT_wall)
+
+    u_n = (
+        u_g[:, 0:1] * wall_normals[:, 0:1]
+        + u_g[:, 1:2] * wall_normals[:, 1:2]
+        + u_g[:, 2:3] * wall_normals[:, 2:3]
+    )
+    v_n = (
+        v_g[:, 0:1] * wall_normals[:, 0:1]
+        + v_g[:, 1:2] * wall_normals[:, 1:2]
+        + v_g[:, 2:3] * wall_normals[:, 2:3]
+    )
+    w_n = (
+        w_g[:, 0:1] * wall_normals[:, 0:1]
+        + w_g[:, 1:2] * wall_normals[:, 1:2]
+        + w_g[:, 2:3] * wall_normals[:, 2:3]
+    )
+
+    wss_vector = mu * torch.cat([u_n, v_n, w_n], dim=1)
     return wss_vector
 
 
@@ -402,7 +418,8 @@ def process_single_case(
     n_sup = min(n_points, DEFAULT_N_SUP)
     n_int = min(n_points, n_interior)
     idx_sup = np.random.choice(n_points, n_sup, replace=False)
-    idx_int = np.random.choice(n_points, n_int, replace=False)
+    # Replaced random with uniform grid spacing to guarantee better spatial coverage
+    idx_int = np.linspace(0, n_points - 1, n_int, dtype=int)
     X_sup = X_all[idx_sup]
     Y_sup = Y_all[idx_sup]
     X_int = X_all[idx_int]
@@ -439,13 +456,19 @@ def process_single_case(
     model.eval()
     with torch.no_grad():
         if unsteady:
-            t_mid = T_END / 2
-            scale = pulsatile_scale(torch.tensor(t_mid, device=DEVICE))
-            t_col = t_mid * torch.ones((X_all.shape[0], 1), device=DEVICE)
-            XT_all = torch.cat([X_all, t_col], dim=1)
-            delta_all = model(XT_all)
-            velocity_corrected = (scale * V_all + delta_all[:, :3]).cpu().numpy()
-            pressure_corrected = (P_all + delta_all[:, 3:4]).cpu().numpy()
+            # Reintegrate full sweep to avoid temporal mismatch
+            velocity_accum = torch.zeros_like(V_all)
+            pressure_accum = torch.zeros_like(P_all)
+            t_eval = torch.linspace(0, T_END, steps=10, device=DEVICE)
+            for t_val in t_eval:
+                scale = pulsatile_scale(t_val)
+                t_col = t_val * torch.ones((X_all.shape[0], 1), device=DEVICE)
+                XT_all = torch.cat([X_all, t_col], dim=1)
+                delta_all = model(XT_all)
+                velocity_accum += scale * V_all + delta_all[:, :3]
+                pressure_accum += P_all + delta_all[:, 3:4]
+            velocity_corrected = (velocity_accum / len(t_eval)).cpu().numpy()
+            pressure_corrected = (pressure_accum / len(t_eval)).cpu().numpy()
         else:
             t_col = torch.zeros((X_all.shape[0], 1), device=DEVICE)
             XT_all = torch.cat([X_all, t_col], dim=1)
@@ -458,24 +481,28 @@ def process_single_case(
         t_vals = np.linspace(0, T_END, NT)
         for t in t_vals:
             scale = pulsatile_scale(torch.tensor(t, device=DEVICE))
-            t_col = torch.full((X_all.shape[0], 1), t, device=DEVICE)
-            XT = torch.cat([X_all, t_col], dim=1)
-            with torch.no_grad():
-                delta = model(XT)
-                vel = scale * V_all + delta[:, :3]
-            wss = compute_wss(vel, X_all, X_wall, N_wall)
-            wss_history.append(wss)
+            t_col_wall = torch.full((X_wall.shape[0], 1), t, device=DEVICE)
+
+            with torch.enable_grad():
+                XT_wall = torch.cat([X_wall, t_col_wall], dim=1).requires_grad_(True)
+                delta_wall = model(XT_wall)
+                vel_wall = scale * Y_wall_baseline[:, 0:3] + delta_wall[:, :3]
+                wss = compute_wss(vel_wall, XT_wall, N_wall)
+            wss_history.append(wss.detach())
+
         wss_final = wss_history[NT // 2]
         tawss = compute_tawss(wss_history)
         osi = compute_osi(wss_history)
         von_mises = compute_von_mises_stress(wss_final)
     else:
-        t_col = torch.zeros((X_all.shape[0], 1), device=DEVICE)
-        XT = torch.cat([X_all, t_col], dim=1)
-        with torch.no_grad():
-            delta = model(XT)
-            vel = V_all + delta[:, :3]
-        wss_final = compute_wss(vel, X_all, X_wall, N_wall)
+        t_col_wall = torch.zeros((X_wall.shape[0], 1), device=DEVICE)
+        with torch.enable_grad():
+            XT_wall = torch.cat([X_wall, t_col_wall], dim=1).requires_grad_(True)
+            delta_wall = model(XT_wall)
+            vel_wall = Y_wall_baseline[:, 0:3] + delta_wall[:, :3]
+            wss_final = compute_wss(vel_wall, XT_wall, N_wall)
+
+        wss_final = wss_final.detach()
         wss_mag = compute_wss_magnitude(wss_final)
         von_mises = compute_von_mises_stress(wss_final)
         tawss = wss_mag
@@ -491,16 +518,26 @@ def process_single_case(
         t_vals = np.linspace(0, T_END, NT)
         for ti, t in enumerate(t_vals):
             scale = pulsatile_scale(torch.tensor(t, device=DEVICE))
-            t_col = torch.full((X_all.shape[0], 1), t, device=DEVICE)
-            XT = torch.cat([X_all, t_col], dim=1)
+            t_col_all = torch.full((X_all.shape[0], 1), t, device=DEVICE)
+            t_col_wall = torch.full((X_wall.shape[0], 1), t, device=DEVICE)
+
             with torch.no_grad():
-                delta = model(XT)
-                vel_t = scale * V_all + delta[:, :3]
-                pres_t = P_all + delta[:, 3:4]
-            wss_t = compute_wss(vel_t, X_all, X_wall, N_wall)
+                XT_all = torch.cat([X_all, t_col_all], dim=1)
+                delta_all = model(XT_all)
+                vel_t = scale * V_all + delta_all[:, :3]
+                pres_t = P_all + delta_all[:, 3:4]
+
+            with torch.enable_grad():
+                XT_wall = torch.cat([X_wall, t_col_wall], dim=1).requires_grad_(True)
+                delta_wall = model(XT_wall)
+                vel_wall = scale * Y_wall_baseline[:, 0:3] + delta_wall[:, :3]
+                wss_t = compute_wss(vel_wall, XT_wall, N_wall)
+
+            wss_t = wss_t.detach()
             wss_mag_t = compute_wss_magnitude(wss_t)
-            velocity_t = vel_t.cpu().numpy()
-            pressure_t = pres_t.cpu().numpy()
+            velocity_t = vel_t.detach().cpu().numpy()
+            pressure_t = pres_t.detach().cpu().numpy()
+
             flow_csv = timesteps_dir / f"flow_t{ti:02d}.csv"
             flow_data = np.concatenate([xyz, pressure_t, velocity_t], axis=1)
             np.savetxt(
@@ -510,9 +547,11 @@ def process_single_case(
                 header=f"x,y,z,p,u,v,w,time={t:.4f}s",
                 comments="",
             )
+
             wss_csv = timesteps_dir / f"wss_t{ti:02d}.csv"
             wss_data = np.concatenate(
-                [wall_points, wss_t.cpu().numpy(), wss_mag_t.cpu().numpy().reshape(-1, 1)], axis=1
+                [wall_points, wss_t.cpu().numpy(), wss_mag_t.cpu().numpy().reshape(-1, 1)],
+                axis=1,
             )
             np.savetxt(
                 wss_csv,
@@ -521,12 +560,14 @@ def process_single_case(
                 header=f"x,y,z,wss_x,wss_y,wss_z,wss_magnitude,time={t:.4f}s",
                 comments="",
             )
+
             if HAS_PYVISTA:
                 vtp_t = timesteps_dir / f"flow_t{ti:02d}.vtp"
                 wall_mesh_t = pv.PolyData(wall_points)
                 wall_mesh_t["WSS"] = wss_mag_t.cpu().numpy()
                 wall_mesh_t["WSS_Vector"] = wss_t.cpu().numpy()
                 wall_mesh_t.save(vtp_t)
+
         time_index = timesteps_dir / "time_index.csv"
         np.savetxt(
             time_index,
@@ -539,10 +580,12 @@ def process_single_case(
         flow_csv = timesteps_dir / "flow_steady.csv"
         corrected_data = np.concatenate([xyz, pressure_corrected, velocity_corrected], axis=1)
         np.savetxt(flow_csv, corrected_data, delimiter=",", header="x,y,z,p,u,v,w", comments="")
+
         wss_csv = timesteps_dir / "wss_steady.csv"
         wss_mag = compute_wss_magnitude(wss_final)
         wss_data = np.concatenate(
-            [wall_points, wss_final.cpu().numpy(), wss_mag.cpu().numpy().reshape(-1, 1)], axis=1
+            [wall_points, wss_final.cpu().numpy(), wss_mag.cpu().numpy().reshape(-1, 1)],
+            axis=1,
         )
         np.savetxt(
             wss_csv,

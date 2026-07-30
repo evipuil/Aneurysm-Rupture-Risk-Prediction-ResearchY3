@@ -1,4 +1,4 @@
-# Version 4 source snapshot
+# Version 5 source snapshot
 import csv
 import logging
 import os
@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+import neural_networks as nn_net
 import numpy as np
 import pyvista as pv
 import torch
@@ -13,7 +14,6 @@ from scipy.spatial import KDTree
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "old_scripts"))
-import neural_networks as nn_net
 
 # Configuration
 VTP_DIR = "vtp_data"
@@ -47,8 +47,9 @@ _file.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"
 logger.addHandler(_console)
 logger.addHandler(_file)
 
-
 # Geometry helpers
+
+
 def compute_normals(points, k=10):
     # Estimate a representative center and average normal from local PCA
     if len(points) < 3:
@@ -221,12 +222,12 @@ def run_inference(X_sup, simple_inlet, trunk, branch_bc, branch_bp, device):
         y = y * bp.unsqueeze(1)
 
     preds = y[0].cpu().numpy()  # (N, 4) -> [p, u, v, w]
-    preds[:, 0] -= np.mean(preds[:, 0])  # zero-mean pressure
-    preds[:, 1] += 0.5  # offset u
     return preds
 
 
 # Save functions
+
+
 def save_csv(points, preds, path):
     data = np.concatenate([points, preds], axis=1)
     np.savetxt(path, data, delimiter=",", header="x,y,z,p,u,v,w", comments="")
