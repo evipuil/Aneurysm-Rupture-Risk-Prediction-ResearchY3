@@ -1,0 +1,70 @@
+# Local tooling and editor state
+.work/
+.venv/
+venv/
+.env
+.env.*
+.idea/
+.vscode/
+.agents/
+.codex/
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+
+# Manuscripts and presentation files
+*.doc
+*.docx
+*.pdf
+*.ppt
+*.pptx
+*.odt
+
+# Research datasets and derived tables
+data/
+datasets/
+original_data/
+flow_data/
+vtp_data/
+predictions/
+metadata.csv
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.xls
+*.xlsx
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.vtk
+*.vtp
+*.stl
+
+# Training output, checkpoints, and logs
+results*/
+outputs*/
+checkpoints*/
+runs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.log
+*.out
+*.err
+output*.txt
+error*.txt
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini
