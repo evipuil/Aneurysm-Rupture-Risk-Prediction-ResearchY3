@@ -1,7 +1,8 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -9,10 +10,15 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+from rupture_status import KNOWN_RUPTURE_STATUSES, normalize_rupture_status
+
 try:
     from scipy.spatial import ConvexHull
+    from scipy.stats import mannwhitneyu, spearmanr
 except Exception:
     ConvexHull = None
+    mannwhitneyu = None
+    spearmanr = None
 
 try:
     from sklearn.impute import SimpleImputer
@@ -28,12 +34,18 @@ except Exception as exc:  # pragma: no cover - import error is reported at runti
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_METADATA_PATH = PROJECT_ROOT / "metadata.csv"
-DEFAULT_DATA_DIR = PROJECT_ROOT / "predictions" / "pinn_corrected"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results_v13_feature_extraction"
+DEFAULT_DATA_DIR = PROJECT_ROOT / "flow_data" / "full_accuracy2_copy"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results_v14_feature_extraction"
+DEFAULT_LEGACY_WSS_SCALE = float(os.environ.get("v14_LEGACY_WSS_SCALE", 1000.0))
 SAFE_CLINICAL_CATEGORICAL_FIELDS = ("location", "side")
 INTERNAL_METADATA_COLUMNS = {"case_name", "patient_group", "vesselFileID", "cutToShow"}
 PUBLIC_METADATA_COLUMNS = ("case_id", "target")
 NON_FEATURE_COLUMNS = {"case_id", "target", *INTERNAL_METADATA_COLUMNS}
+NON_INFORMATIVE_FEATURES = {
+    # Defined by each case's own 20th percentile, so this fraction is approximately
+    # 0.20 by construction and cannot meaningfully distinguish cases.
+    "hemo_low_tawss_fraction",
+}
 LEAKAGE_PREFIXES = (
     "clinical_source=",
     "clinical_hospital=",
@@ -125,9 +137,6 @@ def geometry_features(coords: np.ndarray) -> Dict[str, float]:
 
     features = {
         "geometry_n_points": float(len(coords)),
-        "geometry_centroid_x": _safe_float(center[0]),
-        "geometry_centroid_y": _safe_float(center[1]),
-        "geometry_centroid_z": _safe_float(center[2]),
         "geometry_bbox_x": _safe_float(bounds[0]),
         "geometry_bbox_y": _safe_float(bounds[1]),
         "geometry_bbox_z": _safe_float(bounds[2]),
@@ -162,7 +171,7 @@ def geometry_features(coords: np.ndarray) -> Dict[str, float]:
     return features
 
 
-def hemodynamic_features(df: pd.DataFrame) -> Dict[str, float]:
+def hemodynamic_features(df: pd.DataFrame, wss_scale: float = 1.0) -> Dict[str, float]:
     tawss = (
         pd.to_numeric(df.get("tawss", pd.Series(dtype=float)), errors="coerce")
         .fillna(0.0)
@@ -179,6 +188,12 @@ def hemodynamic_features(df: pd.DataFrame) -> Dict[str, float]:
         .to_numpy(dtype=np.float64)
     )
 
+    # Legacy V14 outputs differentiated velocity with respect to millimetres.
+    # Scale them to per-metre gradients before computing Pa-based quantities.
+    tawss = np.maximum(tawss * float(wss_scale), 0.0)
+    von_mises = np.maximum(von_mises * float(wss_scale), 0.0)
+    osi = np.clip(osi, 0.0, 0.499)
+
     if len(tawss) == 0:
         tawss = np.array([0.0], dtype=np.float64)
         osi = np.array([0.0], dtype=np.float64)
@@ -188,11 +203,11 @@ def hemodynamic_features(df: pd.DataFrame) -> Dict[str, float]:
     low_tawss = tawss <= low_tawss_threshold
     high_osi = osi >= 0.2
     combined = tawss * (1.0 - 2.0 * osi)
-    denom = (1.0 - 2.0 * osi) * tawss
-    rrt = np.zeros_like(tawss, dtype=np.float64)
-    valid = np.abs(denom) > 1e-8
-    rrt[valid] = 1.0 / denom[valid]
+    denom = np.maximum((1.0 - 2.0 * osi) * np.maximum(tawss, 1e-6), 1e-6)
+    rrt = 1.0 / denom
     rrt[~np.isfinite(rrt)] = 0.0
+    if len(rrt) > 1:
+        rrt = np.clip(rrt, 0.0, np.percentile(rrt, 99.0))
     shear_ratio = tawss / (von_mises + 1e-6)
     shear_ratio[~np.isfinite(shear_ratio)] = 0.0
 
@@ -247,25 +262,34 @@ def clinical_features(meta_row: pd.Series) -> Dict[str, float]:
     return features
 
 
-def extract_case_row(case_dir: Path, meta_row: pd.Series) -> Dict[str, float]:
+def extract_case_row(
+    case_dir: Path, meta_row: pd.Series, legacy_wss_scale: float = DEFAULT_LEGACY_WSS_SCALE
+) -> Dict[str, float]:
     hemo_df = load_hemodynamics(case_dir)
     coords = hemo_df[["x", "y", "z"]].to_numpy(dtype=np.float64)
 
+    status = normalize_rupture_status(meta_row.get("status", None))
+    if status is None:
+        raise ValueError(f"Unknown rupture status for {case_dir.name}")
     row = {
         "case_name": case_dir.name,
         "patient_group": _stable_group_id(meta_row, case_dir.name),
         "vesselFileID": str(meta_row.get("vesselFileID", case_dir.name)),
         "cutToShow": str(meta_row.get("cutToShow", "cut1")),
-        "target": 1 if str(meta_row.get("status", "")).strip().lower() == "ruptured" else 0,
+        "target": KNOWN_RUPTURE_STATUSES[status],
     }
     row.update(geometry_features(coords))
-    row.update(hemodynamic_features(hemo_df))
+    wss_scale = 1.0 if (case_dir / "hemodynamic_units.json").exists() else float(legacy_wss_scale)
+    row.update(hemodynamic_features(hemo_df, wss_scale=wss_scale))
     row.update(clinical_features(meta_row))
     return row
 
 
 def discover_case_rows(
-    data_dir: Path, metadata_path: Path, limit: int | None = None
+    data_dir: Path,
+    metadata_path: Path,
+    limit: int | None = None,
+    legacy_wss_scale: float = DEFAULT_LEGACY_WSS_SCALE,
 ) -> pd.DataFrame:
     metadata, key_to_idx = build_metadata_index(metadata_path)
     rows: List[Dict[str, float]] = []
@@ -282,7 +306,9 @@ def discover_case_rows(
         meta_row = _match_case_row(case_dir.name, metadata, key_to_idx)
         if meta_row is None:
             continue
-        rows.append(extract_case_row(case_dir, meta_row))
+        if normalize_rupture_status(meta_row.get("status", None)) is None:
+            continue
+        rows.append(extract_case_row(case_dir, meta_row, legacy_wss_scale=legacy_wss_scale))
 
     if not rows:
         return pd.DataFrame()
@@ -322,7 +348,11 @@ def _is_leakage_feature(feature_name: str) -> bool:
 def _feature_columns(features: pd.DataFrame, target_col: str) -> List[str]:
     excluded = set(NON_FEATURE_COLUMNS)
     excluded.add(target_col)
-    return [c for c in features.columns if c not in excluded and not _is_leakage_feature(c)]
+    return [
+        c
+        for c in features.columns
+        if c not in excluded and c not in NON_INFORMATIVE_FEATURES and not _is_leakage_feature(c)
+    ]
 
 
 def _public_feature_table(features: pd.DataFrame) -> pd.DataFrame:
@@ -396,9 +426,16 @@ def compute_feature_importance(
         )
 
         clf = pipeline.named_steps["clf"]
-        abs_coef = np.abs(clf.coef_[0])
+        signed_coef = clf.coef_[0]
         coef_rows.append(
-            pd.DataFrame({"feature": feature_cols, "coef_importance": abs_coef, "fold": fold_idx})
+            pd.DataFrame(
+                {
+                    "feature": feature_cols,
+                    "signed_coef": signed_coef,
+                    "coef_importance": np.abs(signed_coef),
+                    "fold": fold_idx,
+                }
+            )
         )
 
         scoring = "roc_auc" if len(np.unique(y_val)) > 1 else "accuracy"
@@ -415,10 +452,15 @@ def compute_feature_importance(
             )
         )
 
-    coef_df = (
-        pd.concat(coef_rows, ignore_index=True)
-        .groupby("feature", as_index=False)["coef_importance"]
-        .mean()
+    coef_folds = pd.concat(coef_rows, ignore_index=True)
+    coef_df = coef_folds.groupby("feature", as_index=False).agg(
+        signed_coef_mean=("signed_coef", "mean"),
+        signed_coef_std=("signed_coef", "std"),
+        positive_coef_fraction=(
+            "signed_coef",
+            lambda values: float(np.mean(np.asarray(values) > 0)),
+        ),
+        coef_importance=("coef_importance", "mean"),
     )
     perm_df = (
         pd.concat(perm_rows, ignore_index=True)
@@ -452,6 +494,50 @@ def compute_feature_importance(
     return summary, modality_summary, pd.DataFrame(fold_rows)
 
 
+def compute_univariate_associations(
+    features: pd.DataFrame, target_col: str = "target"
+) -> pd.DataFrame:
+    """Describe effect direction separately from multivariable feature importance."""
+    if mannwhitneyu is None or spearmanr is None:
+        return pd.DataFrame()
+
+    target = features[target_col].astype(int)
+    rows = []
+    for feature in _feature_columns(features, target_col):
+        values = pd.to_numeric(features[feature], errors="coerce")
+        valid = values.notna() & target.notna()
+        observed = values[valid]
+        labels = target[valid]
+        negative = observed[labels == 0]
+        positive = observed[labels == 1]
+        if len(negative) < 2 or len(positive) < 2 or observed.nunique() < 2:
+            continue
+
+        rho, rho_p = spearmanr(observed, labels)
+        u_stat, mw_p = mannwhitneyu(positive, negative, alternative="two-sided")
+        rank_biserial = 2.0 * float(u_stat) / (len(positive) * len(negative)) - 1.0
+        rows.append(
+            {
+                "feature": feature,
+                "modality": _modality_for_feature(feature),
+                "n_unruptured": len(negative),
+                "n_ruptured": len(positive),
+                "median_unruptured": float(negative.median()),
+                "median_ruptured": float(positive.median()),
+                "mean_unruptured": float(negative.mean()),
+                "mean_ruptured": float(positive.mean()),
+                "spearman_rho": float(rho),
+                "spearman_p": float(rho_p),
+                "rank_biserial": rank_biserial,
+                "mann_whitney_p": float(mw_p),
+                "univariate_auroc": float(roc_auc_score(labels, observed)),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        "spearman_rho", key=lambda column: column.abs(), ascending=False
+    )
+
+
 def build_condensed_tables(
     metadata_path: Path,
     data_dir: Path,
@@ -459,10 +545,13 @@ def build_condensed_tables(
     limit: int | None = None,
     top_k: int = 25,
     seed: int = 42,
+    legacy_wss_scale: float = DEFAULT_LEGACY_WSS_SCALE,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    features = discover_case_rows(data_dir, metadata_path, limit=limit)
+    features = discover_case_rows(
+        data_dir, metadata_path, limit=limit, legacy_wss_scale=legacy_wss_scale
+    )
     if features.empty:
         raise RuntimeError(f"No cases with hemodynamics_aggregate.csv found in {data_dir}")
 
@@ -474,10 +563,12 @@ def build_condensed_tables(
     importance_path = output_dir / "feature_importance_summary.csv"
     modality_path = output_dir / "modality_importance_summary.csv"
     fold_path = output_dir / "importance_cv_summary.csv"
+    association_path = output_dir / "univariate_feature_associations.csv"
 
     importance.to_csv(importance_path, index=False)
     modality_summary.to_csv(modality_path, index=False)
     fold_metrics.to_csv(fold_path, index=False)
+    compute_univariate_associations(features).to_csv(association_path, index=False)
 
     selected = importance.head(max(1, min(int(top_k), len(importance))))["feature"].tolist()
     condensed_cols = [*PUBLIC_METADATA_COLUMNS, *selected]
@@ -490,6 +581,7 @@ def build_condensed_tables(
         "feature_importance": importance_path,
         "modality_importance": modality_path,
         "cross_validation_summary": fold_path,
+        "univariate_associations": association_path,
         "top_feature_table": top_path,
     }
 
@@ -511,6 +603,12 @@ def main():
         help="Number of top-ranked features to keep in the condensed table",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--legacy-wss-scale",
+        type=float,
+        default=DEFAULT_LEGACY_WSS_SCALE,
+        help="Scale legacy per-mm WSS outputs to Pa; ignored for cases with hemodynamic_units.json.",
+    )
     args = parser.parse_args()
 
     metadata_path = Path(args.metadata_path)
@@ -529,6 +627,7 @@ def main():
         limit=args.limit,
         top_k=args.top_k,
         seed=args.seed,
+        legacy_wss_scale=args.legacy_wss_scale,
     )
 
     print("Feature extraction complete.")

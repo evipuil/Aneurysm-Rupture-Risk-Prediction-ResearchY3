@@ -1,4 +1,4 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 import argparse
 import csv
 import logging
@@ -20,61 +20,61 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Configuration
 
-VTP_DIR = os.environ.get("v13_VTP_DIR", "vtp_data")
-OUTPUT_DIR = os.environ.get("v13_OUTPUT_DIR", "predictions/pinn_corrected_carreau")
+VTP_DIR = os.environ.get("v14_VTP_DIR", "vtp_data")
+OUTPUT_DIR = os.environ.get("v14_OUTPUT_DIR", "predictions/pinn_corrected_carreau")
 TRAINING_LOG_SUBDIR = "training_logs"
 
-STEADY_EPOCHS = int(os.environ.get("v13_STEADY_EPOCHS", 400))
-UNSTEADY_EPOCHS = int(os.environ.get("v13_UNSTEADY_EPOCHS", 600))
-LBFGS_ITERS = int(os.environ.get("v13_LBFGS_ITERS", 50))
-NT = int(os.environ.get("v13_NT", 10))
-N_INTERIOR = int(os.environ.get("v13_N_INTERIOR", 4096))
-N_WALL = int(os.environ.get("v13_N_WALL", 2048))
-N_INLET = int(os.environ.get("v13_N_INLET", 2048))
-COLLOC_BATCH = int(os.environ.get("v13_COLLOC_BATCH", 2048))
+STEADY_EPOCHS = int(os.environ.get("v14_STEADY_EPOCHS", 400))
+UNSTEADY_EPOCHS = int(os.environ.get("v14_UNSTEADY_EPOCHS", 600))
+LBFGS_ITERS = int(os.environ.get("v14_LBFGS_ITERS", 50))
+NT = int(os.environ.get("v14_NT", 10))
+N_INTERIOR = int(os.environ.get("v14_N_INTERIOR", 4096))
+N_WALL = int(os.environ.get("v14_N_WALL", 2048))
+N_INLET = int(os.environ.get("v14_N_INLET", 2048))
+COLLOC_BATCH = int(os.environ.get("v14_COLLOC_BATCH", 2048))
 T_END = 1.0
 RHO = 1060.0
 
-# Carreau model parameters for blood
-# μ(γ̇) = μ∞ + (μ₀ - μ∞) * (1 + (λ*γ̇)²)^((n-1)/2)
-MU_ZERO = float(os.environ.get("v13_MU_ZERO", 0.16))  # zero-shear-rate viscosity (Pa·s)
-MU_INF = float(os.environ.get("v13_MU_INF", 0.0035))  # infinite-shear-rate viscosity (Pa·s)
-LAMBDA_CARREAU = float(os.environ.get("v13_LAMBDA", 0.110))  # relaxation time (s)
-N_POWER = float(os.environ.get("v13_N_POWER", 0.8))  # power-law index (n < 1 for shear-thinning)
-NU_INF = MU_INF / RHO
+# Carreau viscosity parameters for blood.
+MU_ZERO = float(os.environ.get("v14_MU_ZERO", 0.16))  # zero-shear-rate viscosity (Pa·s)
+MU_INF = float(os.environ.get("v14_MU_INF", 0.0035))  # infinite-shear-rate viscosity (Pa·s)
+LAMBDA_CARREAU = float(os.environ.get("v14_LAMBDA", 0.110))  # relaxation time (s)
+N_POWER = float(os.environ.get("v14_N_POWER", 0.8))  # power-law index (n < 1 for shear-thinning)
 
-FLOW_RATE = float(os.environ.get("v13_FLOW_RATE", 0.2))
-HIDDEN_DIM = int(os.environ.get("v13_HIDDEN_DIM", 128))
-N_LAYERS = int(os.environ.get("v13_N_LAYERS", 5))
-FOURIER_MODES = int(os.environ.get("v13_FOURIER_MODES", 16))
-FOURIER_SIGMA = float(os.environ.get("v13_FOURIER_SIGMA", 2.0))
+# Keep the original V14 coordinate and flow scaling for checkpoint reproducibility.
+# The Newtonian pipeline's later SI conversion is intentionally not applied here.
+FLOW_RATE = float(os.environ.get("v14_FLOW_RATE", 0.2))
+HIDDEN_DIM = int(os.environ.get("v14_HIDDEN_DIM", 128))
+N_LAYERS = int(os.environ.get("v14_N_LAYERS", 5))
+FOURIER_MODES = int(os.environ.get("v14_FOURIER_MODES", 16))
+FOURIER_SIGMA = float(os.environ.get("v14_FOURIER_SIGMA", 2.0))
 
-LR = float(os.environ.get("v13_LR", 1e-3))
-WALL_LOSS_WEIGHT = float(os.environ.get("v13_WALL_W", 5.0))
-INLET_LOSS_WEIGHT = float(os.environ.get("v13_INLET_W", 5.0))
-PHYSICS_LOSS_WEIGHT = float(os.environ.get("v13_PHYS_W", 1.0))
-CORR_LOSS_WEIGHT = float(os.environ.get("v13_CORR_W", 0.0))
-GRAD_CLIP = float(os.environ.get("v13_GRAD_CLIP", 1.0))
-LOG_EVERY = int(os.environ.get("v13_LOG_EVERY", 25))
-LOSS_REF_EMA = float(os.environ.get("v13_LOSS_REF_EMA", 0.98))
-SCHEDULER_KIND = os.environ.get("v13_SCHEDULER", "warm_restarts").strip().lower()
-SCHEDULER_ETA_MIN = float(os.environ.get("v13_ETA_MIN", 1e-6))
-SCHEDULER_RESTART_T0 = int(os.environ.get("v13_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
-EARLY_STOP_PATIENCE = int(os.environ.get("v13_EARLY_STOP_PATIENCE", 50))
-SAVE_CHECKPOINT_EVERY = int(os.environ.get("v13_SAVE_CHECKPOINT_EVERY", 0))
-FIXED_COLLOCATION = os.environ.get("v13_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
+LR = float(os.environ.get("v14_LR", 1e-3))
+WALL_LOSS_WEIGHT = float(os.environ.get("v14_WALL_W", 5.0))
+INLET_LOSS_WEIGHT = float(os.environ.get("v14_INLET_W", 5.0))
+PHYSICS_LOSS_WEIGHT = float(os.environ.get("v14_PHYS_W", 1.0))
+CORR_LOSS_WEIGHT = float(os.environ.get("v14_CORR_W", 0.0))
+GRAD_CLIP = float(os.environ.get("v14_GRAD_CLIP", 1.0))
+LOG_EVERY = int(os.environ.get("v14_LOG_EVERY", 25))
+LOSS_REF_EMA = float(os.environ.get("v14_LOSS_REF_EMA", 0.98))
+SCHEDULER_KIND = os.environ.get("v14_SCHEDULER", "warm_restarts").strip().lower()
+SCHEDULER_ETA_MIN = float(os.environ.get("v14_ETA_MIN", 1e-6))
+SCHEDULER_RESTART_T0 = int(os.environ.get("v14_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
+EARLY_STOP_PATIENCE = int(os.environ.get("v14_EARLY_STOP_PATIENCE", 50))
+SAVE_CHECKPOINT_EVERY = int(os.environ.get("v14_SAVE_CHECKPOINT_EVERY", 0))
+FIXED_COLLOCATION = os.environ.get("v14_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
 
-LIMIT = int(os.environ["v13_LIMIT"]) if os.environ.get("v13_LIMIT") else None
+LIMIT = int(os.environ["v14_LIMIT"]) if os.environ.get("v14_LIMIT") else None
 SEED = 42
-UNSTEADY = os.environ.get("v13_UNSTEADY", "1").lower() in {"1", "true", "yes"}
-REQUIRE_GPU = os.environ.get("v13_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
-CUDA_INDEX = int(os.environ.get("v13_CUDA_DEVICE", 0))
+UNSTEADY = os.environ.get("v14_UNSTEADY", "1").lower() in {"1", "true", "yes"}
+REQUIRE_GPU = os.environ.get("v14_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
+CUDA_INDEX = int(os.environ.get("v14_CUDA_DEVICE", 0))
 
 
 def _resolve_device():
     if not torch.cuda.is_available():
         if REQUIRE_GPU:
-            raise RuntimeError("CUDA required. Set v13_REQUIRE_GPU=0 to allow CPU.")
+            raise RuntimeError("CUDA required. Set v14_REQUIRE_GPU=0 to allow CPU.")
         return torch.device("cpu")
     idx = max(0, min(CUDA_INDEX, torch.cuda.device_count() - 1))
     torch.cuda.set_device(idx)
@@ -93,27 +93,36 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 TRAINING_LOG_DIR = Path(OUTPUT_DIR) / TRAINING_LOG_SUBDIR
 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logger = logging.getLogger("v13PINNPipeline")
+logger = logging.getLogger("V14PINNPipeline")
 logger.setLevel(logging.INFO)
 logger.handlers.clear()
-_fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-_ch = logging.StreamHandler()
-_ch.setFormatter(_fmt)
-logger.addHandler(_ch)
-_fh = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
-_fh.setFormatter(_fmt)
-logger.addHandler(_fh)
-
-logger.info(
-    "Carreau model parameters: μ₀=%.4f, μ∞=%.6f, λ=%.4f, n=%.2f",
-    MU_ZERO,
-    MU_INF,
-    LAMBDA_CARREAU,
-    N_POWER,
-)
+LOG_FORMATTER = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(LOG_FORMATTER)
+logger.addHandler(console_handler)
+file_handler = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
+file_handler.setFormatter(LOG_FORMATTER)
+logger.addHandler(file_handler)
 
 
-# Geometry helpers
+def configure_output_paths(output_dir: str | Path) -> None:
+    """Refresh output-dependent paths after command-line overrides."""
+    global OUTPUT_DIR, TRAINING_LOG_DIR
+    OUTPUT_DIR = str(output_dir)
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    TRAINING_LOG_DIR = Path(OUTPUT_DIR) / TRAINING_LOG_SUBDIR
+    TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            handler.close()
+    file_handler = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
+    file_handler.setFormatter(LOG_FORMATTER)
+    logger.addHandler(file_handler)
+
+
+# Geometry
 
 
 def _gradients(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -240,62 +249,39 @@ def extract_wall_points(surface, n_wall: int):
     return pts, normals
 
 
-# Carreau model
-
-
 def compute_shear_rate(u_x, u_y, u_z, v_x, v_y, v_z, w_x, w_y, w_z):
-    """
-    Compute the second invariant of the strain rate tensor (scalar shear rate).
-    γ̇ = sqrt(2 * S_ij * S_ij) where S is the symmetric strain rate tensor.
-    For efficiency, we use the approximation: γ̇ = sqrt(2) * ||D|| where D is strain rate.
-    """
-    # Strain rate tensor components (symmetric part of velocity gradient)
-    S_xx = u_x
-    S_yy = v_y
-    S_zz = w_z
-    S_xy = 0.5 * (u_y + v_x)
-    S_xz = 0.5 * (u_z + w_x)
-    S_yz = 0.5 * (v_z + w_y)
+    """Compute scalar shear rate from the symmetric strain-rate tensor."""
+    s_xx = u_x
+    s_yy = v_y
+    s_zz = w_z
+    s_xy = 0.5 * (u_y + v_x)
+    s_xz = 0.5 * (u_z + w_x)
+    s_yz = 0.5 * (v_z + w_y)
 
-    # Second invariant: γ̇ = sqrt(2 * (S_ij * S_ij))
     shear_rate_sq = 2.0 * (
-        S_xx * S_xx + S_yy * S_yy + S_zz * S_zz + 2.0 * (S_xy * S_xy + S_xz * S_xz + S_yz * S_yz)
+        s_xx * s_xx + s_yy * s_yy + s_zz * s_zz + 2.0 * (s_xy * s_xy + s_xz * s_xz + s_yz * s_yz)
     )
-    shear_rate = torch.sqrt(torch.clamp(shear_rate_sq, min=1e-12))
-    return shear_rate
+    return torch.sqrt(torch.clamp(shear_rate_sq, min=1e-12))
 
 
 def carreau_viscosity(shear_rate):
-    """
-    Carreau model for blood viscosity.
-    μ(γ̇) = μ∞ + (μ₀ - μ∞) * (1 + (λ*γ̇)²)^((n-1)/2)
-
-    Args:
-        shear_rate: shear rate (s^-1), shape (N, 1)
-
-    Returns:
-        viscosity: dynamic viscosity μ (Pa·s), shape (N, 1)
-    """
+    """Return dynamic viscosity from the Carreau model."""
     lambda_gamma = LAMBDA_CARREAU * shear_rate
     exp_factor = (N_POWER - 1.0) / 2.0
-    viscosity = MU_INF + (MU_ZERO - MU_INF) * torch.pow(1.0 + lambda_gamma**2, exp_factor)
-    return viscosity
+    return MU_INF + (MU_ZERO - MU_INF) * torch.pow(1.0 + lambda_gamma**2, exp_factor)
 
 
 def kinematic_viscosity_carreau(shear_rate):
-    """
-    Return kinematic viscosity (ν = μ/ρ) from Carreau model.
-    """
-    mu = carreau_viscosity(shear_rate)
-    return mu / RHO
+    """Return kinematic viscosity from the Carreau model."""
+    return carreau_viscosity(shear_rate) / RHO
 
 
-# Model
+# Network
 class FourierFeatures(nn.Module):
     def __init__(self, in_dim: int, modes: int, sigma: float):
         super().__init__()
-        B = torch.randn(in_dim, modes) * sigma
-        self.register_buffer("B", B)
+        projection_matrix = torch.randn(in_dim, modes) * sigma
+        self.register_buffer("B", projection_matrix)
 
     def forward(self, x):
         proj = 2 * np.pi * x @ self.B
@@ -310,16 +296,17 @@ class PINNNet(nn.Module):
         self.features = FourierFeatures(in_dim, modes, sigma)
         feat_dim = 2 * modes + in_dim
         self.input_proj = nn.Linear(feat_dim, hidden)
-        self.blocks = nn.ModuleList()
-        for _ in range(layers):
-            self.blocks.append(
+        self.blocks = nn.ModuleList(
+            [
                 nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
-            )
+                for _ in range(layers)
+            ]
+        )
         self.head = nn.Linear(hidden, 4)
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight, gain=1.0)
-                nn.init.zeros_(m.bias)
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_normal_(module.weight, gain=1.0)
+                nn.init.zeros_(module.bias)
 
     def forward(self, x):
         h = F.silu(self.input_proj(self.features(x)))
@@ -332,12 +319,9 @@ def pulsatile_scale(t, t_end: float = T_END):
     return 1.0 + 0.6 * torch.sin(2 * np.pi * t / t_end)
 
 
-# Physics loss with Carreau model
+# Training
 def physics_residual(model, xt_int, unsteady: bool):
-    """
-    Compute Navier-Stokes residuals at collocation points with Carreau viscosity.
-    Uses the generalized Navier-Stokes equations with shear-rate-dependent viscosity.
-    """
+    """Compute Navier-Stokes residuals with shear-dependent viscosity."""
     xt_int = xt_int.requires_grad_(True)
     field = model(xt_int)
     p = field[:, 0:1]
@@ -355,13 +339,9 @@ def physics_residual(model, xt_int, unsteady: bool):
     w_x, w_y, w_z, w_t = w_g.split(1, dim=1)
     p_x, p_y, p_z, _ = p_g.split(1, dim=1)
 
-    # Compute shear rate
     gamma_dot = compute_shear_rate(u_x, u_y, u_z, v_x, v_y, v_z, w_x, w_y, w_z)
-
-    # Get Carreau viscosity and kinematic viscosity
     nu_t = kinematic_viscosity_carreau(gamma_dot)
 
-    # Compute second derivatives
     u_xx = _gradients(u_x, xt_int)[:, 0:1]
     u_yy = _gradients(u_y, xt_int)[:, 1:2]
     u_zz = _gradients(u_z, xt_int)[:, 2:3]
@@ -372,20 +352,16 @@ def physics_residual(model, xt_int, unsteady: bool):
     w_yy = _gradients(w_y, xt_int)[:, 1:2]
     w_zz = _gradients(w_z, xt_int)[:, 2:3]
 
-    # Laplacians
     lap_u = u_xx + u_yy + u_zz
     lap_v = v_xx + v_yy + v_zz
     lap_w = w_xx + w_yy + w_zz
 
-    # Advection terms
     adv_u = u * u_x + v * u_y + w * u_z
     adv_v = u * v_x + v * v_y + w * v_z
     adv_w = u * w_x + v * w_y + w * w_z
 
-    # Continuity (incompressibility constraint)
     cont = u_x + v_y + w_z
 
-    # Momentum equations with Carreau viscosity
     mom_u = (u_t if unsteady else 0.0) + adv_u + p_x - nu_t * lap_u
     mom_v = (v_t if unsteady else 0.0) + adv_v + p_y - nu_t * lap_v
     mom_w = (w_t if unsteady else 0.0) + adv_w + p_z - nu_t * lap_w
@@ -394,7 +370,7 @@ def physics_residual(model, xt_int, unsteady: bool):
 
 
 def sample_collocation(x_pool, unsteady, batch_size, device):
-    """Return (batch_size, 4) -- (x, y, z, t) sampled uniformly from the interior."""
+    """Sample interior coordinates and a corresponding time value."""
     n = x_pool.shape[0]
     idx = torch.randint(0, n, (batch_size,), device=device)
     x = x_pool[idx]
@@ -514,7 +490,7 @@ def train_pinn(
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             try:
                 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
-                best_path = Path(TRAINING_LOG_DIR) / f"{case_name}_best.pt"
+                best_path = TRAINING_LOG_DIR / f"{case_name}_best.pt"
                 torch.save(model.state_dict(), best_path)
                 logger.info("Saved best checkpoint: %s (epoch %d)", best_path, epoch + 1)
             except Exception as exc:
@@ -619,7 +595,7 @@ def train_pinn(
     return model, history, stats
 
 
-# Post-training evaluation + hemodynamic metrics
+# Evaluation and hemodynamic metrics
 def evaluate_flow(model, x_all, unsteady: bool):
     """Mean-in-time velocity/pressure over NT samples for unsteady, else single call."""
     model.eval()
@@ -639,11 +615,8 @@ def evaluate_flow(model, x_all, unsteady: bool):
         return field[:, 0:1].cpu().numpy(), field[:, 1:4].cpu().numpy()
 
 
-def compute_wss_carreau(velocity, xt_wall, wall_normals, model):
-    """
-    Compute wall shear stress using Carreau viscosity.
-    τ_w = μ(γ̇) * ∂u/∂n where n is the wall normal.
-    """
+def compute_wss_carreau(velocity, xt_wall, wall_normals):
+    """Compute wall shear stress using Carreau viscosity."""
     u = velocity[:, 0:1]
     v = velocity[:, 1:2]
     w = velocity[:, 2:3]
@@ -655,7 +628,6 @@ def compute_wss_carreau(velocity, xt_wall, wall_normals, model):
     v_x, v_y, v_z, _ = v_g.split(1, dim=1)
     w_x, w_y, w_z, _ = w_g.split(1, dim=1)
 
-    # Compute shear rate for Carreau model
     gamma_dot = compute_shear_rate(u_x, u_y, u_z, v_x, v_y, v_z, w_x, w_y, w_z)
     mu = carreau_viscosity(gamma_dot)
 
@@ -676,7 +648,7 @@ def wss_history_unsteady(model, x_wall, wall_normals, nt=NT):
         with torch.enable_grad():
             xt_wall = torch.cat([x_wall, t_col], dim=1).requires_grad_(True)
             field = model(xt_wall)
-            wss = compute_wss_carreau(field[:, 1:4], xt_wall, wall_normals, model)
+            wss = compute_wss_carreau(field[:, 1:4], xt_wall, wall_normals)
         history.append(wss.detach())
     return history, ts
 
@@ -694,21 +666,21 @@ def compute_tawss(wss_history):
     return mags.mean(dim=0)
 
 
-# Per-case processing
+# Case processing
 def _write_training_logs(case_name, history, summary):
     if history:
-        with open(TRAINING_LOG_DIR / f"{case_name}_epoch_losses.csv", "w", newline="") as f:
+        with open(TRAINING_LOG_DIR / f"{case_name}_epoch_losses.csv", "w", newline="") as handle:
             fields = list(history[0].keys())
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
-            w.writerows(history)
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(history)
     summary_path = TRAINING_LOG_DIR / "case_training_summary.csv"
     write_header = not summary_path.exists()
-    with open(summary_path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(summary.keys()))
+    with open(summary_path, "a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(summary.keys()))
         if write_header:
-            w.writeheader()
-        w.writerow(summary)
+            writer.writeheader()
+        writer.writerow(summary)
 
 
 def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
@@ -795,7 +767,7 @@ def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
         with torch.enable_grad():
             xt_wall = torch.cat([x_wall, t_col_wall], dim=1).requires_grad_(True)
             field = model(xt_wall)
-            wss_final = compute_wss_carreau(field[:, 1:4], xt_wall, n_wall_t, model).detach()
+            wss_final = compute_wss_carreau(field[:, 1:4], xt_wall, n_wall_t).detach()
         wss_mag = torch.norm(wss_final, dim=-1)
         tawss = wss_mag
         osi = torch.zeros_like(wss_mag)
@@ -858,12 +830,11 @@ def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
     return summary
 
 
-# Main
 def main():
-    global VTP_DIR, OUTPUT_DIR, STEADY_EPOCHS, UNSTEADY_EPOCHS, UNSTEADY, LIMIT
+    global VTP_DIR, STEADY_EPOCHS, UNSTEADY_EPOCHS, UNSTEADY, LIMIT
 
     parser = argparse.ArgumentParser(
-        description="Train PINN flow simulation pipeline with Carreau model (v13)"
+        description="Train PINN flow simulation pipeline with Carreau model (V14)"
     )
     parser.add_argument(
         "--vtp-dir", default=VTP_DIR, help="Directory containing VTP geometry files"
@@ -884,7 +855,7 @@ def main():
     args = parser.parse_args()
 
     VTP_DIR = args.vtp_dir
-    OUTPUT_DIR = args.output_dir
+    configure_output_paths(args.output_dir)
     STEADY_EPOCHS = args.steady_epochs
     UNSTEADY_EPOCHS = args.unsteady_epochs
     UNSTEADY = args.unsteady

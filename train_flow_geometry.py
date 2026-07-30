@@ -1,12 +1,6 @@
-# Version 13 source snapshot
-"""
-train_flow_geometry.py
-
-Flow + Geometry rupture prediction model trainer for v13.
-Combines flow and geometry branches via fusion classifier.
-"""
-
+# Version 14 source snapshot
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +11,8 @@ import torch.nn as nn
 from base_trainer import (
     FLOW_CHANNELS,
     TORCH_AVAILABLE,
+    append_prediction_rows,
+    augment_flow_tensor,
     build_case_cache,
     build_epoch_row,
     build_point_loaders,
@@ -28,10 +24,11 @@ from base_trainer import (
     get_scheduler,
     load_checkpoint_weights,
     make_cv_splits,
+    predict_tensor_model,
     set_seed,
     write_epoch_log,
 )
-from model_architectures import BranchFusionClassifier, PointEncoder
+from model_architectures import GatedFlowFusionClassifier, PointEncoder
 
 if not TORCH_AVAILABLE:
     print("ERROR: PyTorch is required", file=sys.stderr)
@@ -39,16 +36,19 @@ if not TORCH_AVAILABLE:
 
 SEED, CV_SEED = 42, 42
 METADATA_PATH = "metadata.csv"
-DATA_DIR = "predictions/pinn_corrected"
-OUTPUT_ROOT = Path("results_V13_suite")
+DATA_DIR = "flow_data/full_accuracy2_copy"
+OUTPUT_ROOT = Path("results_V14_suite")
+BACKBONE = "pointnext"
 N_FOLDS, BATCH_SIZE, EPOCHS, LR, WEIGHT_DECAY = 5, 6, 220, 3e-4, 2e-4
 TARGET_N, EARLY_STOP_PATIENCE = 4096, 35
 USE_AMP, LABEL_SMOOTHING, AUX_LOSS_WEIGHT, DROPOUT, EMBED_DIM = True, 0.05, 0.15, 0.30, 256
+FLOW_BRANCH_DROPOUT = float(os.environ.get("v14_FLOW_BRANCH_DROPOUT", 0.20))
+FLOW_CHANNEL_DROPOUT = float(os.environ.get("v14_FLOW_CHANNEL_DROPOUT", 0.10))
+FLOW_NOISE_STD = float(os.environ.get("v14_FLOW_NOISE_STD", 0.02))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
-    """Train flow+geometry model."""
     print(f"Training FLOW+GEOMETRY model at {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(SEED)
@@ -58,6 +58,7 @@ def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
     cv_splits, split_strategy = make_cv_splits(df, N_FOLDS, CV_SEED)
     print(f"  CV split: {split_strategy}")
     fold_metrics = []
+    prediction_rows = []
 
     for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
         print(f"\n=== FOLD {fold_idx + 1}/{N_FOLDS} ===")
@@ -75,21 +76,21 @@ def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
             batch_size=BATCH_SIZE,
         )
 
-        # Two branches: geometry + flow
         geo_encoder = PointEncoder(
-            in_channel=0, embed_dim=EMBED_DIM, backbone="pointnet2", dropout=DROPOUT
+            in_channel=0, embed_dim=EMBED_DIM, backbone=BACKBONE, dropout=DROPOUT
         )
         flow_encoder = PointEncoder(
-            in_channel=FLOW_CHANNELS, embed_dim=EMBED_DIM, backbone="pointnet2", dropout=DROPOUT
+            in_channel=FLOW_CHANNELS, embed_dim=EMBED_DIM, backbone=BACKBONE, dropout=DROPOUT
         )
 
-        classifier = BranchFusionClassifier(
+        classifier = GatedFlowFusionClassifier(
             [
                 {"name": "geometry", "module": geo_encoder},
                 {"name": "flow", "module": flow_encoder},
             ],
             embed_dim=EMBED_DIM,
             dropout=DROPOUT,
+            flow_branch_dropout=FLOW_BRANCH_DROPOUT,
         )
         classifier = classifier.to(DEVICE)
 
@@ -110,6 +111,11 @@ def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
             "dropout": DROPOUT,
             "embed_dim": EMBED_DIM,
             "flow_channels": FLOW_CHANNELS,
+            "flow_branch_dropout": FLOW_BRANCH_DROPOUT,
+            "flow_channel_dropout": FLOW_CHANNEL_DROPOUT,
+            "flow_noise_std": FLOW_NOISE_STD,
+            "fusion": "gated_residual",
+            "backbone": BACKBONE,
         }
 
         for epoch in range(EPOCHS):
@@ -117,11 +123,12 @@ def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
             train_loss = 0.0
             n_train = 0
 
-            for xb, fb, cb, yb in train_loader:
-                xb, fb, cb, yb = xb.to(DEVICE), fb.to(DEVICE), cb.to(DEVICE), yb.to(DEVICE)
+            for xb, fb, _cb, yb in train_loader:
+                xb, fb, yb = xb.to(DEVICE), fb.to(DEVICE), yb.to(DEVICE)
+                fb = augment_flow_tensor(fb, FLOW_CHANNEL_DROPOUT, FLOW_NOISE_STD)
 
                 with torch.amp.autocast("cuda", enabled=USE_AMP and DEVICE.type == "cuda"):
-                    logits, aux_loss = classifier(xb, fb, cb)
+                    logits, aux_loss = classifier(xb, fb)
                     ce_loss = criterion(logits, yb)
                     loss = ce_loss + AUX_LOSS_WEIGHT * aux_loss
 
@@ -137,7 +144,7 @@ def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
             val_auc = val_metrics.get("auc", 0.0)
             epoch_rows.append(
                 build_epoch_row(
-                    "flow_geometry",
+                    "flow_geometry_pointnext",
                     fold_idx,
                     epoch + 1,
                     train_loss / max(1, n_train),
@@ -162,16 +169,20 @@ def run_flow_geometry_experiment(df: pd.DataFrame, output_dir: Path):
         write_epoch_log(output_dir, fold_idx, epoch_rows)
 
         classifier.load_state_dict(load_checkpoint_weights(best_model_path, DEVICE))
-        val_metrics = evaluate_tensor_model(classifier, val_loader, criterion, DEVICE, USE_AMP)
+        val_metrics, labels, probs, preds = predict_tensor_model(
+            classifier, val_loader, criterion, DEVICE, USE_AMP
+        )
+        append_prediction_rows(prediction_rows, fold_idx, val_df, labels, probs, preds)
         val_metrics["split_strategy"] = split_strategy
         fold_metrics.append(val_metrics)
 
     pd.DataFrame(fold_metrics).to_csv(output_dir / "fold_summary.csv", index=False)
+    pd.DataFrame(prediction_rows).to_csv(output_dir / "pooled_predictions.csv", index=False)
     print("\nFlow+Geometry training complete.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train flow+geometry rupture model (v13 modular)")
+    parser = argparse.ArgumentParser(description="Train flow+geometry rupture model (V14 modular)")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--metadata-path", default=METADATA_PATH)
     parser.add_argument("--data-dir", default=DATA_DIR)
@@ -182,7 +193,7 @@ def main():
     output_dir = (
         Path(args.output_dir)
         if args.output_dir
-        else OUTPUT_ROOT / f"flow_geometry_seed_{args.seed}"
+        else OUTPUT_ROOT / f"flow_geometry_pointnext_seed_{args.seed}"
     )
 
     df = discover_cases(args.data_dir, args.metadata_path)

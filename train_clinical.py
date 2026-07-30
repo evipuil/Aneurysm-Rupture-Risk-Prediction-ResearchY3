@@ -1,4 +1,4 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 import argparse
 import sys
 from pathlib import Path
@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from base_trainer import (
     TORCH_AVAILABLE,
+    append_prediction_rows,
     build_case_cache,
     build_epoch_row,
     build_point_loaders,
@@ -20,6 +21,7 @@ from base_trainer import (
     get_scheduler,
     load_checkpoint_weights,
     make_cv_splits,
+    predict_tensor_model,
     set_seed,
     write_epoch_log,
 )
@@ -30,8 +32,8 @@ if not TORCH_AVAILABLE:
     sys.exit(1)
 
 SEED, CV_SEED = 42, 42
-METADATA_PATH, DATA_DIR = "metadata.csv", "predictions/pinn_corrected"
-OUTPUT_ROOT = Path("results_V13_suite")
+METADATA_PATH, DATA_DIR = "metadata.csv", "flow_data/full_accuracy2_copy"
+OUTPUT_ROOT = Path("results_V14_suite")
 N_FOLDS, BATCH_SIZE, EPOCHS, LR, WEIGHT_DECAY = 5, 6, 220, 3e-4, 2e-4
 EARLY_STOP_PATIENCE = 35
 USE_AMP, LABEL_SMOOTHING, AUX_LOSS_WEIGHT, DROPOUT, EMBED_DIM = True, 0.05, 0.15, 0.30, 256
@@ -39,7 +41,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def run_clinical_experiment(df: pd.DataFrame, output_dir: Path):
-    """Train clinical-only model."""
     print(f"Training CLINICAL-ONLY model at {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(SEED)
@@ -49,6 +50,7 @@ def run_clinical_experiment(df: pd.DataFrame, output_dir: Path):
     cv_splits, split_strategy = make_cv_splits(df, N_FOLDS, CV_SEED)
     print(f"  CV split: {split_strategy}")
     fold_metrics = []
+    prediction_rows = []
 
     for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
         print(f"\n=== FOLD {fold_idx + 1}/{N_FOLDS} ===")
@@ -66,7 +68,6 @@ def run_clinical_experiment(df: pd.DataFrame, output_dir: Path):
             batch_size=BATCH_SIZE,
         )
 
-        # Clinical branch only
         clin_dim = train_clin.shape[1]
         clin_encoder = ClinicalEncoder(clin_dim, embed_dim=EMBED_DIM, dropout=DROPOUT)
 
@@ -97,7 +98,7 @@ def run_clinical_experiment(df: pd.DataFrame, output_dir: Path):
             train_loss = 0.0
             n_train = 0
 
-            for xb, fb, cb, yb in train_loader:
+            for _xb, _fb, cb, yb in train_loader:
                 cb, yb = cb.to(DEVICE), yb.to(DEVICE)
 
                 with torch.amp.autocast("cuda", enabled=USE_AMP and DEVICE.type == "cuda"):
@@ -140,16 +141,20 @@ def run_clinical_experiment(df: pd.DataFrame, output_dir: Path):
         write_epoch_log(output_dir, fold_idx, epoch_rows)
 
         classifier.load_state_dict(load_checkpoint_weights(best_model_path, DEVICE))
-        val_metrics = evaluate_tensor_model(classifier, val_loader, criterion, DEVICE, USE_AMP)
+        val_metrics, labels, probs, preds = predict_tensor_model(
+            classifier, val_loader, criterion, DEVICE, USE_AMP
+        )
+        append_prediction_rows(prediction_rows, fold_idx, val_df, labels, probs, preds)
         val_metrics["split_strategy"] = split_strategy
         fold_metrics.append(val_metrics)
 
     pd.DataFrame(fold_metrics).to_csv(output_dir / "fold_summary.csv", index=False)
+    pd.DataFrame(prediction_rows).to_csv(output_dir / "pooled_predictions.csv", index=False)
     print("\nClinical training complete.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train clinical-only rupture model (v13 modular)")
+    parser = argparse.ArgumentParser(description="Train clinical-only rupture model (V14 modular)")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--metadata-path", default=METADATA_PATH)
     parser.add_argument("--data-dir", default=DATA_DIR)

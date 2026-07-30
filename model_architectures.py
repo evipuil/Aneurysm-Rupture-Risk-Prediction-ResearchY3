@@ -1,17 +1,17 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 from __future__ import annotations
 
+import math
 from typing import List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 try:
     from torch_geometric.nn import (
-        BatchNorm,
         GATv2Conv,
-        global_add_pool,
         global_max_pool,
         global_mean_pool,
     )
@@ -212,6 +212,8 @@ class PointEncoder(nn.Module):
         self.embed_dim = embed_dim
         self.backbone = backbone
         self.dropout = dropout
+        self.use_xyz_as_features = backbone == "pointnext" and in_channel == 0
+        first_layer_in_channel = 6 if self.use_xyz_as_features else in_channel + 3
 
         if backbone == "pointnet2":
             self.Layer1 = PointSetAbstraction(
@@ -244,7 +246,7 @@ class PointEncoder(nn.Module):
                 npoint=1024,
                 radius=0.1,
                 nsample=32,
-                in_channel=in_channel + 3,
+                in_channel=first_layer_in_channel,
                 mlp=[64, 64, 128],
                 dropout=dropout,
             )
@@ -269,6 +271,8 @@ class PointEncoder(nn.Module):
             raise ValueError(f"Unknown backbone: {backbone}")
 
     def forward(self, xyz, points=None):
+        if points is None and self.use_xyz_as_features:
+            points = xyz
         new_points, new_xyz = self.Layer1(xyz, points)
         new_points, new_xyz = self.Layer2(new_xyz, new_points)
         new_points, new_xyz = self.Layer3(new_xyz, new_points)
@@ -348,6 +352,261 @@ class BranchFusionClassifier(nn.Module):
         return logits, aux_loss_total
 
 
+class GatedFlowFusionClassifier(nn.Module):
+    """Geometry-preserving fusion where flow contributes as a learned residual.
+
+    The geometry branch stays as the backbone representation. The flow branch is
+    projected into the same embedding space, then a learned gate decides how
+    much flow residual to add. This reduces overfitting when simulated flow
+    channels are noisy or partly redundant with morphology.
+    """
+
+    def __init__(
+        self,
+        branches: List[dict],
+        embed_dim: int = 256,
+        dropout: float = 0.3,
+        num_classes: int = 2,
+        flow_branch_dropout: float = 0.25,
+    ):
+        super().__init__()
+        self.branches = nn.ModuleDict()
+        for b in branches:
+            self.branches[b["name"]] = b["module"]
+        if "geometry" not in self.branches or "flow" not in self.branches:
+            raise ValueError("GatedFlowFusionClassifier requires geometry and flow branches")
+
+        self.flow_branch_dropout = float(flow_branch_dropout)
+        self.flow_proj = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.flow_gate = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim, embed_dim),
+            nn.Sigmoid(),
+        )
+        self.geo_flow_norm = nn.LayerNorm(embed_dim)
+
+        has_clinical = "clinical" in self.branches
+        head_in = embed_dim * (2 if has_clinical else 1)
+        self.fusion_head = nn.Sequential(
+            nn.Linear(head_in, 384),
+            nn.LayerNorm(384),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(384, 192),
+            nn.LayerNorm(192),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(192, num_classes),
+        )
+
+    def forward(self, xyz=None, flow=None, clinical=None):
+        geo_token, geo_aux = self.branches["geometry"](xyz)
+        flow_token, flow_aux = self.branches["flow"](xyz, flow)
+
+        if self.training and self.flow_branch_dropout > 0:
+            keep_prob = max(1e-6, 1.0 - self.flow_branch_dropout)
+            keep = (
+                torch.rand(flow_token.shape[0], 1, device=flow_token.device) < keep_prob
+            ).float()
+            flow_token = flow_token * keep / keep_prob
+
+        flow_delta = self.flow_proj(flow_token)
+        flow_gate = self.flow_gate(torch.cat([geo_token, flow_token], dim=1))
+        geo_flow = self.geo_flow_norm(geo_token + flow_gate * flow_delta)
+
+        embeds = [geo_flow]
+        aux_losses = [geo_aux, flow_aux]
+        if "clinical" in self.branches:
+            clinical_token, clinical_aux = self.branches["clinical"](clinical)
+            embeds.append(clinical_token)
+            aux_losses.append(clinical_aux)
+
+        fused = torch.cat(embeds, dim=1)
+        logits = self.fusion_head(fused)
+        aux_loss_total = sum(aux_losses) if aux_losses else 0.0
+        return logits, aux_loss_total
+
+
+class ClinicalAnchoredLateFusionClassifier(nn.Module):
+    """Late-fuse supervised geometry-clinical and geometry-flow heads.
+
+    The clinical head remains the anchor. A single learned flow weight is
+    constrained to a conservative range so complementary flow information can
+    improve ranking without replacing the stronger geometry-clinical signal.
+    """
+
+    def __init__(
+        self,
+        branches: List[dict],
+        embed_dim: int = 256,
+        dropout: float = 0.3,
+        num_classes: int = 2,
+        max_flow_weight: float = 0.5,
+        initial_flow_weight: float = 0.25,
+    ):
+        super().__init__()
+        self.branches = nn.ModuleDict({b["name"]: b["module"] for b in branches})
+        required = {"geometry", "flow", "clinical"}
+        if not required.issubset(self.branches):
+            raise ValueError(
+                "ClinicalAnchoredLateFusionClassifier requires geometry, flow, and clinical branches"
+            )
+
+        def pair_head():
+            return nn.Sequential(
+                nn.Linear(embed_dim * 2, 512),
+                nn.LayerNorm(512),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(512, 256),
+                nn.LayerNorm(256),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(256, num_classes),
+            )
+
+        self.geometry_clinical_head = pair_head()
+        self.geometry_flow_head = pair_head()
+        self.max_flow_weight = float(max_flow_weight)
+        ratio = min(max(initial_flow_weight / max(self.max_flow_weight, 1e-6), 1e-4), 1.0 - 1e-4)
+        self.flow_weight_logit = nn.Parameter(
+            torch.tensor(math.log(ratio / (1.0 - ratio)), dtype=torch.float32)
+        )
+
+    def current_flow_weight(self):
+        return self.max_flow_weight * torch.sigmoid(self.flow_weight_logit)
+
+    def forward(self, xyz=None, flow=None, clinical=None):
+        geometry_token, _ = self.branches["geometry"](xyz)
+        flow_token, _ = self.branches["flow"](xyz, flow)
+        clinical_token, _ = self.branches["clinical"](clinical)
+
+        base_logits = self.geometry_clinical_head(
+            torch.cat([geometry_token, clinical_token], dim=1)
+        )
+        flow_logits = self.geometry_flow_head(torch.cat([geometry_token, flow_token], dim=1))
+        base_margin = base_logits[:, 1] - base_logits[:, 0]
+        flow_margin = flow_logits[:, 1] - flow_logits[:, 0]
+        flow_weight = self.current_flow_weight()
+        final_margin = (1.0 - flow_weight) * base_margin + flow_weight * flow_margin
+        logits = torch.stack([-0.5 * final_margin, 0.5 * final_margin], dim=1)
+        return logits, {
+            "geometry_clinical": base_logits,
+            "geometry_flow": flow_logits,
+            "flow_weight": flow_weight,
+        }
+
+
+# Voxel CNN Encoder
+
+
+def _group_count(channels: int) -> int:
+    for groups in (8, 4, 2):
+        if channels % groups == 0:
+            return groups
+    return 1
+
+
+class VoxelConvBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, dropout: float = 0.0):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv3d(
+                in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
+            ),
+            nn.GroupNorm(_group_count(out_channels), out_channels),
+            nn.GELU(),
+            nn.Dropout3d(dropout) if dropout > 0 else nn.Identity(),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class VoxelResidualBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, dropout: float = 0.0):
+        super().__init__()
+        self.conv1 = VoxelConvBlock(in_channels, out_channels, stride=stride, dropout=dropout)
+        self.conv2 = nn.Sequential(
+            nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(_group_count(out_channels), out_channels),
+        )
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.GroupNorm(_group_count(out_channels), out_channels),
+            )
+        else:
+            self.shortcut = nn.Identity()
+        self.dropout = nn.Dropout3d(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x):
+        residual = self.shortcut(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = F.gelu(x + residual)
+        return self.dropout(x)
+
+
+class VoxelCNNClassifier(nn.Module):
+    """3D CNN for voxelized geometry and hemodynamic fields."""
+
+    def __init__(
+        self,
+        in_channels: int = 12,
+        base_channels: int = 24,
+        dropout: float = 0.25,
+        num_classes: int = 2,
+    ):
+        super().__init__()
+        self.stem = VoxelConvBlock(in_channels, base_channels, dropout=dropout * 0.5)
+        self.stage1 = VoxelResidualBlock(base_channels, base_channels, dropout=dropout * 0.5)
+        self.stage2 = VoxelResidualBlock(
+            base_channels, base_channels * 2, stride=2, dropout=dropout
+        )
+        self.stage3 = VoxelResidualBlock(
+            base_channels * 2, base_channels * 4, stride=2, dropout=dropout
+        )
+        self.stage4 = VoxelResidualBlock(
+            base_channels * 4, base_channels * 8, stride=2, dropout=dropout
+        )
+        pooled_channels = base_channels * 8 * 2
+        self.head = nn.Sequential(
+            nn.Linear(pooled_channels, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, voxels, flow=None, clinical=None):
+        x = self.stem(voxels)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        pooled = torch.cat(
+            [
+                F.adaptive_avg_pool3d(x, 1).flatten(1),
+                F.adaptive_max_pool3d(x, 1).flatten(1),
+            ],
+            dim=1,
+        )
+        return self.head(pooled), 0.0
+
+
 # Graph Encoder (GNN via torch_geometric)
 
 
@@ -359,24 +618,51 @@ class GraphEncoder(nn.Module):
         dropout: float = 0.3,
         num_classes: int = 2,
         input_dim: int = 14,
+        num_heads: int = 2,
+        num_layers: int = 3,
+        checkpoint_layers: bool = True,
     ):
         super().__init__()
         if not HAS_PYG:
             raise RuntimeError("torch_geometric is required for GraphEncoder")
+        self.checkpoint_layers = bool(checkpoint_layers)
 
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.5),
+        )
         self.gat_layers = nn.ModuleList(
             [
-                GATv2Conv(hidden_dim, hidden_dim, heads=4, dropout=dropout),
-                GATv2Conv(hidden_dim * 4, hidden_dim, heads=4, dropout=dropout),
+                GATv2Conv(
+                    hidden_dim,
+                    hidden_dim,
+                    heads=num_heads,
+                    concat=False,
+                    dropout=dropout,
+                    edge_dim=4,
+                    add_self_loops=False,
+                )
+                for _ in range(num_layers)
             ]
         )
-        self.bn_layers = nn.ModuleList([BatchNorm(hidden_dim * 4), BatchNorm(hidden_dim * 4)])
+        self.norm_layers = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in self.gat_layers])
+        self.node_fuse = nn.Sequential(
+            nn.Linear(hidden_dim * (num_layers + 1), hidden_dim * 2),
+            nn.LayerNorm(hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+        )
         self.pool_mlp = nn.Sequential(
-            nn.Linear(hidden_dim * 4 * 3, 256),
+            nn.Linear(hidden_dim * 3, 256),
+            nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(256, embed_dim),
+            nn.GELU(),
         )
         self.head = nn.Sequential(
             nn.Linear(embed_dim, 128),
@@ -387,17 +673,47 @@ class GraphEncoder(nn.Module):
 
     def forward(self, data):
         x = self.input_proj(data.x)
-        for gat, bn in zip(self.gat_layers, self.bn_layers):
-            x = gat(x, data.edge_index)
-            x = bn(x)
-            x = F.gelu(x)
+        edge_attr = getattr(data, "edge_attr", None)
+        if edge_attr is None:
+            src, dst = data.edge_index
+            delta = data.pos[dst] - data.pos[src]
+            edge_attr = torch.cat([delta, torch.norm(delta, dim=1, keepdim=True)], dim=1)
+        states = [x]
+        for gat, norm in zip(self.gat_layers, self.norm_layers):
 
-        # Global pooling
-        x_add = global_add_pool(x, data.batch)
-        x_max = global_max_pool(x, data.batch)
-        x_mean = global_mean_pool(x, data.batch)
-        x_pooled = torch.cat([x_add, x_max, x_mean], dim=1)
+            def layer_forward(
+                node_features,
+                edge_index,
+                edge_features,
+                gat_layer=gat,
+                norm_layer=norm,
+            ):
+                updated = gat_layer(node_features, edge_index, edge_attr=edge_features)
+                return F.gelu(norm_layer(updated)) + node_features
+
+            if self.checkpoint_layers and self.training and x.requires_grad:
+                x = checkpoint(
+                    layer_forward,
+                    x,
+                    data.edge_index,
+                    edge_attr,
+                    use_reentrant=False,
+                )
+            else:
+                x = layer_forward(x, data.edge_index, edge_attr)
+            states.append(x)
+
+        x = self.node_fuse(torch.cat(states, dim=1))
+
+        # Compute graph moments in FP32. Under float16 autocast, x * x can
+        # overflow and make E[x^2] - E[x]^2 evaluate to inf - inf = NaN.
+        pooled_x = x.float()
+        x_max = global_max_pool(pooled_x, data.batch)
+        x_mean = global_mean_pool(pooled_x, data.batch)
+        x_mean_sq = global_mean_pool(pooled_x.square(), data.batch)
+        x_std = torch.sqrt(torch.clamp(x_mean_sq - x_mean * x_mean, min=1e-8))
+        x_pooled = torch.cat([x_mean, x_max, x_std], dim=1)
 
         feat = self.pool_mlp(x_pooled)
         logits = self.head(feat)
-        return logits, 0.0
+        return logits, feat

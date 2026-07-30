@@ -1,4 +1,4 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 from __future__ import annotations
 
 import csv
@@ -12,6 +12,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+from rupture_status import KNOWN_RUPTURE_STATUSES, normalize_rupture_status
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -114,7 +116,7 @@ except Exception:
         raise RuntimeError("StratifiedGroupKFold is unavailable in the local fallback environment")
 
 
-# Metrics & Utilities
+# Metrics and utilities
 
 
 def set_seed(seed: int = 42):
@@ -203,7 +205,7 @@ def classification_report_dict(labels, probs, threshold=0.5):
     }
 
 
-# Data Discovery & Loading
+# Data discovery and loading
 
 
 def _match_folder(folder: str, key_to_idx: Dict[str, int]):
@@ -249,7 +251,9 @@ def discover_cases(
             filepaths.append(csv_path)
     df = df.loc[valid_indices].reset_index(drop=True)
     df["filepath"] = filepaths
-    df["target"] = (df["status"].astype(str).str.lower() == "ruptured").astype(int)
+    df["rupture_status"] = df["status"].map(normalize_rupture_status)
+    df = df.loc[df["rupture_status"].notna()].reset_index(drop=True)
+    df["target"] = df["rupture_status"].map(KNOWN_RUPTURE_STATUSES).astype(int)
     for column in ["age", "sex", *SAFE_CLINICAL_CATEGORICAL_FIELDS, *GROUP_COLUMN_CANDIDATES]:
         if column not in df.columns:
             df[column] = "Unknown"
@@ -310,7 +314,7 @@ def make_cv_splits(df: pd.DataFrame, n_splits: int, seed: int, target_col: str =
     return list(splitter.split(df, y)), "StratifiedKFold"
 
 
-# Point Cloud Operations
+# Point cloud operations
 
 
 def normalize_points(pts: np.ndarray) -> np.ndarray:
@@ -325,13 +329,18 @@ def normalize_features_zscore(feat: np.ndarray, eps: float = 1e-6) -> np.ndarray
     return (feat - mu) / (sigma + eps)
 
 
-def resample_cloud(pts: np.ndarray, target_n: int) -> np.ndarray:
+def resample_cloud(
+    pts: np.ndarray,
+    target_n: int,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
     n = len(pts)
     if n == target_n:
         return np.arange(n)
+    choice = rng.choice if rng is not None else np.random.choice
     if n > target_n:
-        return np.random.choice(n, target_n, replace=False)
-    return np.concatenate([np.arange(n), np.random.choice(n, target_n - n)])
+        return choice(n, target_n, replace=False)
+    return np.concatenate([np.arange(n), choice(n, target_n - n)])
 
 
 def jitter(pts: np.ndarray, sigma: float = 0.001, clip: float = 0.05) -> np.ndarray:
@@ -353,9 +362,22 @@ def random_point_dropout(
     return pts[mask], flow[mask]
 
 
-# Flow Feature Engineering
+# Flow feature engineering
 
 FLOW_CHANNELS = 11
+FLOW_CLIP = float(os.environ.get("v14_FLOW_CLIP", 5.0))
+
+
+def augment_flow_tensor(
+    flow: torch.Tensor, channel_dropout: float = 0.0, noise_std: float = 0.0
+) -> torch.Tensor:
+    if channel_dropout > 0:
+        keep_prob = max(1e-6, 1.0 - channel_dropout)
+        keep = (torch.rand(flow.shape[0], 1, flow.shape[2], device=flow.device) < keep_prob).float()
+        flow = flow * keep / keep_prob
+    if noise_std > 0:
+        flow = flow + noise_std * torch.randn_like(flow)
+    return flow
 
 
 def derive_flow_channels(raw_feats: np.ndarray) -> np.ndarray:
@@ -365,34 +387,41 @@ def derive_flow_channels(raw_feats: np.ndarray) -> np.ndarray:
     if raw_feats.shape[1] < 3:
         pad = np.zeros((raw_feats.shape[0], 3 - raw_feats.shape[1]), dtype=np.float32)
         raw_feats = np.concatenate([raw_feats, pad], axis=1)
-    tawss = raw_feats[:, 0]
-    osi = raw_feats[:, 1]
-    von_mises = raw_feats[:, 2]
-    low_tawss = (tawss < np.percentile(tawss, 20)).astype(np.float32)
-    high_osi = (osi > 0.2).astype(np.float32)
-    combined = tawss * (1.0 - 2.0 * osi)
-    vm_norm = von_mises / (np.max(von_mises) + 1e-8)
+    tawss = np.nan_to_num(raw_feats[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    osi = np.nan_to_num(raw_feats[:, 1], nan=0.0, posinf=0.0, neginf=0.0)
+    von_mises = np.nan_to_num(raw_feats[:, 2], nan=0.0, posinf=0.0, neginf=0.0)
+    tawss_pos = np.clip(tawss, 0.0, None)
+    osi_phys = np.clip(osi, 0.0, 0.499)
+    von_pos = np.clip(von_mises, 0.0, None)
+
+    low_tawss = (tawss_pos < np.percentile(tawss_pos, 20)).astype(np.float32)
+    high_osi = (osi_phys > 0.2).astype(np.float32)
+    combined = tawss_pos * (1.0 - 2.0 * osi_phys)
+    vm_norm = von_pos / (np.max(von_pos) + 1e-8)
     risk = (low_tawss * high_osi).astype(np.float32)
-    denom = (1.0 - 2.0 * osi) * tawss
-    rrt = np.zeros_like(tawss, dtype=np.float32)
-    mask = np.abs(denom) > 1e-8
-    rrt[mask] = 1.0 / denom[mask]
+    denom = np.maximum((1.0 - 2.0 * osi_phys) * np.maximum(tawss_pos, 1e-6), 1e-6)
+    rrt = 1.0 / denom
     rrt[~np.isfinite(rrt)] = 0.0
-    log_von = np.log1p(np.abs(von_mises)).astype(np.float32)
-    shear_ratio = tawss / (von_mises + 1e-6)
+    if len(rrt) > 1:
+        rrt = np.clip(rrt, 0.0, np.percentile(rrt, 99.0))
+    log_tawss = np.log1p(tawss_pos).astype(np.float32)
+    log_von = np.log1p(von_pos).astype(np.float32)
+    log_rrt = np.sign(rrt) * np.log1p(np.abs(rrt))
+    shear_ratio = tawss_pos / (von_pos + 1e-6)
     shear_ratio[~np.isfinite(shear_ratio)] = 0.0
+    shear_ratio = np.sign(shear_ratio) * np.log1p(np.abs(shear_ratio))
     channels = [
-        tawss,
-        osi,
-        von_mises,
+        log_tawss,
+        osi_phys,
+        log_von,
         low_tawss,
         high_osi,
         combined,
         vm_norm,
         risk,
-        rrt,
-        log_von,
+        log_rrt,
         shear_ratio,
+        tawss_pos,
     ]
     return np.stack(channels, axis=1).astype(np.float32)
 
@@ -429,7 +458,7 @@ def summarize_global_features(
     return np.array(features, dtype=np.float32)
 
 
-# Clinical Data
+# Clinical data
 
 
 def compute_clinical_categories(df: pd.DataFrame):
@@ -480,7 +509,7 @@ def build_clinical_matrix(
     return torch.tensor(clinical, dtype=torch.float32), stats
 
 
-# Optimizers & Scheduling
+# Optimizers and scheduling
 
 
 def get_optimizer(model, lr: float, weight_decay: float):
@@ -549,7 +578,7 @@ def build_epoch_row(
     return row
 
 
-# Point Tensor Datasets
+# Point tensor datasets
 
 
 def _read_hemodynamics_csv(filepath: str):
@@ -561,6 +590,11 @@ def _read_hemodynamics_csv(filepath: str):
     else:
         values = df[feat_cols].values.astype(np.float32)
     values[~np.isfinite(values)] = 0.0
+    units_path = Path(filepath).parent / "hemodynamic_units.json"
+    if not units_path.exists():
+        legacy_scale = float(os.environ.get("v14_LEGACY_WSS_SCALE", 1000.0))
+        values[:, 0] *= legacy_scale
+        values[:, 2] *= legacy_scale
     return coords, values
 
 
@@ -595,7 +629,9 @@ def _fit_flow_stats(rows: pd.DataFrame, cache):
 
 
 def _standardize_flow(flow: np.ndarray, stats) -> np.ndarray:
-    return ((flow - stats["flow_mean"]) / stats["flow_std"]).astype(np.float32)
+    z = (flow - stats["flow_mean"]) / stats["flow_std"]
+    z = np.clip(z, -FLOW_CLIP, FLOW_CLIP)
+    return z.astype(np.float32)
 
 
 def _case_to_point_tensors(row, cache, flow_stats, target_n: int = 4096, augment: bool = False):
@@ -644,6 +680,84 @@ def compute_point_fold_tensors(
     )
 
 
+def _case_to_voxel_tensor(
+    row,
+    cache,
+    flow_stats,
+    grid_size: int = 24,
+    augment: bool = False,
+    include_flow: bool = True,
+) -> np.ndarray:
+    item = cache[str(row["filepath"])]
+    coords = normalize_points(item["coords"]).astype(np.float32)
+    flow = _standardize_flow(item["flow_channels"], flow_stats) if include_flow else None
+    if augment:
+        coords = so3_rotate(coords)
+        coords = jitter(coords, sigma=0.003, clip=0.02)
+
+    grid_size = int(grid_size)
+    coords = np.clip(coords, -1.0, 1.0)
+    ijk = np.floor((coords + 1.0) * 0.5 * (grid_size - 1)).astype(np.int64)
+    ix, iy, iz = ijk[:, 0], ijk[:, 1], ijk[:, 2]
+
+    counts = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)
+    input_channels = FLOW_CHANNELS + 1 if include_flow else 1
+    sums = (
+        np.zeros((FLOW_CHANNELS, grid_size, grid_size, grid_size), dtype=np.float32)
+        if include_flow
+        else None
+    )
+    np.add.at(counts, (ix, iy, iz), 1.0)
+    if include_flow:
+        for channel_idx in range(FLOW_CHANNELS):
+            np.add.at(sums[channel_idx], (ix, iy, iz), flow[:, channel_idx])
+
+    volume = np.zeros((input_channels, grid_size, grid_size, grid_size), dtype=np.float32)
+    occupied = counts > 0
+    volume[0, occupied] = 1.0
+    if include_flow and np.any(occupied):
+        volume[1:, occupied] = sums[:, occupied] / counts[occupied]
+    return volume
+
+
+def compute_voxel_fold_tensors(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    cache,
+    grid_size: int = 24,
+    include_flow: bool = True,
+):
+    flow_stats = _fit_flow_stats(train_df, cache) if include_flow else None
+
+    train_volumes = [
+        _case_to_voxel_tensor(
+            row, cache, flow_stats, grid_size=grid_size, augment=True, include_flow=include_flow
+        )
+        for _, row in train_df.iterrows()
+    ]
+    val_volumes = [
+        _case_to_voxel_tensor(
+            row, cache, flow_stats, grid_size=grid_size, augment=False, include_flow=include_flow
+        )
+        for _, row in val_df.iterrows()
+    ]
+
+    train_labels = torch.tensor(train_df["target"].values.astype(np.int64), dtype=torch.long)
+    val_labels = torch.tensor(val_df["target"].values.astype(np.int64), dtype=torch.long)
+    train_aux = torch.zeros((len(train_df), 1), dtype=torch.float32)
+    val_aux = torch.zeros((len(val_df), 1), dtype=torch.float32)
+    return (
+        torch.tensor(np.stack(train_volumes), dtype=torch.float32),
+        train_aux,
+        train_aux,
+        train_labels,
+        torch.tensor(np.stack(val_volumes), dtype=torch.float32),
+        val_aux,
+        val_aux,
+        val_labels,
+    )
+
+
 def build_point_loaders(train_tensors, val_tensors, batch_size: int = 6):
     train_dataset = TensorDataset(*train_tensors)
     val_dataset = TensorDataset(*val_tensors)
@@ -664,6 +778,11 @@ def build_point_loaders(train_tensors, val_tensors, batch_size: int = 6):
 
 
 def evaluate_tensor_model(model, loader, criterion, device, use_amp: bool = True):
+    metrics, _, _, _ = predict_tensor_model(model, loader, criterion, device, use_amp)
+    return metrics
+
+
+def predict_tensor_model(model, loader, criterion, device, use_amp: bool = True):
     model.eval()
     total_loss = 0.0
     probs, labels = [], []
@@ -676,35 +795,99 @@ def evaluate_tensor_model(model, loader, criterion, device, use_amp: bool = True
             total_loss += float(loss.item()) * len(yb)
             probs.extend(F.softmax(logits, dim=1)[:, 1].detach().cpu().numpy())
             labels.extend(yb.detach().cpu().numpy())
+    probs = np.asarray(probs, dtype=np.float32)
+    labels = np.asarray(labels, dtype=np.int64)
     metrics = classification_report_dict(labels, probs)
     metrics["loss"] = total_loss / max(1, len(labels))
-    return metrics
+    preds = (probs > 0.5).astype(np.int64)
+    return metrics, labels, probs, preds
 
 
-# Graph Data
+def append_prediction_rows(
+    rows: List[dict], fold_idx: int, val_df: pd.DataFrame, labels, probs, preds
+):
+    for row_idx, (_, row) in enumerate(val_df.iterrows()):
+        case_id = row.get("case_id", "")
+        if not case_id:
+            vessel = str(row.get("vesselFileID", row.get("dataset", ""))).strip()
+            cut = str(row.get("cutToShow", "")).strip()
+            case_id = (
+                f"{vessel}_{cut}"
+                if vessel and cut
+                else Path(str(row.get("filepath", ""))).parent.name
+            )
+        rows.append(
+            {
+                "fold": fold_idx + 1,
+                "case_id": case_id,
+                "vesselFileID": row.get("vesselFileID", ""),
+                "cutToShow": row.get("cutToShow", ""),
+                "filepath": row.get("filepath", ""),
+                "label": int(labels[row_idx]),
+                "prob": float(probs[row_idx]),
+                "pred": int(preds[row_idx]),
+            }
+        )
+
+
+# Graph data
+
+
+def _chunked_knn_graph(pos: torch.Tensor, k: int, chunk_size: int = 512) -> torch.Tensor:
+    """Build neighbor-to-query edges without allocating an N x N distance matrix."""
+    n = int(pos.shape[0])
+    k = min(int(k), max(0, n - 1))
+    if k == 0:
+        return torch.empty((2, 0), dtype=torch.long)
+
+    sources = []
+    targets = []
+    chunk_size = max(1, int(chunk_size))
+    for start in range(0, n, chunk_size):
+        stop = min(start + chunk_size, n)
+        distances = torch.cdist(pos[start:stop], pos)
+        local_rows = torch.arange(stop - start)
+        global_rows = torch.arange(start, stop)
+        distances[local_rows, global_rows] = float("inf")
+        neighbors = torch.topk(distances, k=k, largest=False).indices
+        sources.append(neighbors.reshape(-1))
+        targets.append(global_rows.view(-1, 1).expand(-1, k).reshape(-1))
+    return torch.stack([torch.cat(sources), torch.cat(targets)], dim=0)
 
 
 def load_graph_case(
-    filepath: str, label: int, augment: bool = False, k: int = 16, target_n: int = 4096
+    filepath: str,
+    label: int,
+    augment: bool = False,
+    k: int = 16,
+    target_n: int = 4096,
+    include_flow: bool = True,
+    make_undirected: bool = True,
+    store_edge_attr: bool = True,
+    knn_chunk_size: int = 512,
+    rng: Optional[np.random.Generator] = None,
 ):
     if not HAS_PYG:
         raise RuntimeError("torch_geometric is required for graph loading")
     coords, raw_flow = _read_hemodynamics_csv(filepath)
-    idx = resample_cloud(coords, target_n)
+    idx = resample_cloud(coords, target_n, rng=rng)
     xyz = normalize_points(coords[idx]).astype(np.float32)
     flow = normalize_features_zscore(derive_flow_channels(raw_flow)[idx]).astype(np.float32)
     if augment:
         xyz = so3_rotate(jitter(xyz, sigma=0.003, clip=0.02))
-    x = torch.tensor(np.concatenate([xyz, flow], axis=1), dtype=torch.float32)
+    features = np.concatenate([xyz, flow], axis=1) if include_flow else xyz
+    x = torch.tensor(features, dtype=torch.float32)
     pos = torch.tensor(xyz, dtype=torch.float32)
     if HAS_TORCH_CLUSTER:
         edge_index = torch_cluster.knn_graph(pos, k=min(k, len(xyz) - 1), loop=False)
     else:
-        dists = torch.cdist(pos, pos)
-        _, nn_idx = torch.topk(dists, k=min(k + 1, len(xyz)), largest=False)
-        src = torch.arange(len(xyz)).view(-1, 1).expand_as(nn_idx[:, 1:]).reshape(-1)
-        dst = nn_idx[:, 1:].reshape(-1)
-        edge_index = torch.stack([src, dst], dim=0)
-    edge_index = to_undirected(edge_index)
+        edge_index = _chunked_knn_graph(pos, k=k, chunk_size=knn_chunk_size)
+    if make_undirected:
+        edge_index = to_undirected(edge_index)
     y = torch.tensor([int(label)], dtype=torch.long)
-    return Data(x=x, edge_index=edge_index, pos=pos, y=y)
+    data = Data(x=x, edge_index=edge_index, pos=pos, y=y)
+    if store_edge_attr:
+        src, dst = edge_index
+        delta = pos[dst] - pos[src]
+        data.edge_attr = torch.cat([delta, torch.norm(delta, dim=1, keepdim=True)], dim=1)
+    return data

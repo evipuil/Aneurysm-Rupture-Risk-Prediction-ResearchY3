@@ -2,6 +2,16 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 14
+
+Source snapshot: Mid-June-July 10, 2026.
+
+- Excluded blank or unknown rupture status before targets, folds, feature extraction, and metrics are constructed.
+- Added explicit status normalization, status auditing, a voxel CNN baseline, and fusion experiments.
+- Reworked flow augmentation, GNN construction and caching, pooled predictions, and PINN unit handling.
+- Hardened local and Slurm launchers and made result reporting current-run-only.
+- Added grouped, legacy-composite, and modality Shapley importance analyses.
+
 ## Version 13
 
 Source snapshot: June 15, 2026.

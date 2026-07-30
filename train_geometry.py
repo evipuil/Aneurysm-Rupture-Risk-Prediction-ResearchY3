@@ -1,12 +1,15 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
 import torch
+import torch.nn as nn
 
 from base_trainer import (
     TORCH_AVAILABLE,
+    append_prediction_rows,
     build_case_cache,
     build_epoch_row,
     build_point_loaders,
@@ -18,6 +21,7 @@ from base_trainer import (
     get_scheduler,
     load_checkpoint_weights,
     make_cv_splits,
+    predict_tensor_model,
     set_seed,
     write_epoch_log,
 )
@@ -27,17 +31,12 @@ if not TORCH_AVAILABLE:
     print("ERROR: PyTorch is required", file=sys.stderr)
     sys.exit(1)
 
-import pandas as pd
-import torch.nn as nn
-import torch.nn.functional as F
-
-# Configuration
-
 SEED = 42
 CV_SEED = 42
 METADATA_PATH = "metadata.csv"
-DATA_DIR = "predictions/pinn_corrected"
-OUTPUT_ROOT = Path("results_V13_suite")
+DATA_DIR = "flow_data/full_accuracy2_copy"
+OUTPUT_ROOT = Path("results_V14_suite")
+DEFAULT_BACKBONE = "pointnext"
 N_FOLDS = 5
 BATCH_SIZE = 6
 EPOCHS = 220
@@ -54,8 +53,7 @@ EMBED_DIM = 256
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = "pointnet2"):
-    """Train geometry-only model with stratified k-fold CV."""
+def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = DEFAULT_BACKBONE):
     print(f"Training GEOMETRY model at {output_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +65,7 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
     cv_splits, split_strategy = make_cv_splits(df, N_FOLDS, CV_SEED)
     print(f"  CV split: {split_strategy}")
     fold_metrics = []
+    prediction_rows = []
 
     for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
         print(f"\n=== FOLD {fold_idx + 1}/{N_FOLDS} ===")
@@ -74,7 +73,6 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
         train_df = df.iloc[train_idx].reset_index(drop=True)
         val_df = df.iloc[val_idx].reset_index(drop=True)
 
-        # Prepare tensors
         train_xyz, train_flow, train_clin, train_labels, val_xyz, val_flow, val_clin, val_labels = (
             compute_point_fold_tensors(train_df, val_df, cache, categories, target_n=TARGET_N)
         )
@@ -85,7 +83,6 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
             batch_size=BATCH_SIZE,
         )
 
-        # Build model: geometry branch only
         point_encoder = PointEncoder(
             in_channel=0, embed_dim=EMBED_DIM, backbone=backbone, dropout=DROPOUT
         )
@@ -111,15 +108,16 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
             "aux_loss_weight": AUX_LOSS_WEIGHT,
             "dropout": DROPOUT,
             "embed_dim": EMBED_DIM,
+            "backbone": backbone,
         }
 
         for epoch in range(EPOCHS):
             classifier.train()
             train_loss = 0.0
-            train_probs, train_labels_list = [], []
+            n_train = 0
 
-            for xb, fb, cb, yb in train_loader:
-                xb, fb, cb, yb = xb.to(DEVICE), fb.to(DEVICE), cb.to(DEVICE), yb.to(DEVICE)
+            for xb, _fb, _cb, yb in train_loader:
+                xb, yb = xb.to(DEVICE), yb.to(DEVICE)
 
                 with torch.amp.autocast("cuda", enabled=USE_AMP and DEVICE.type == "cuda"):
                     logits, aux_loss = classifier(xb)
@@ -133,10 +131,8 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
                 scheduler.step()
 
                 train_loss += loss.item() * len(yb)
-                train_probs.extend(F.softmax(logits, dim=1)[:, 1].detach().cpu().numpy())
-                train_labels_list.extend(yb.detach().cpu().numpy())
+                n_train += len(yb)
 
-            # Validation
             val_metrics = evaluate_tensor_model(classifier, val_loader, criterion, DEVICE, USE_AMP)
             val_auc = val_metrics.get("auc", 0.0)
             epoch_rows.append(
@@ -144,7 +140,7 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
                     f"geometry_{backbone}",
                     fold_idx,
                     epoch + 1,
-                    train_loss / max(1, len(train_labels_list)),
+                    train_loss / max(1, n_train),
                     val_metrics,
                     optimizer,
                     hyperparams,
@@ -153,10 +149,9 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
 
             if epoch % 10 == 0 or epoch == EPOCHS - 1:
                 print(
-                    f"  Epoch {epoch:3d}: train_loss={train_loss / len(train_labels_list):.4f} val_auc={val_auc:.4f} val_loss={val_metrics.get('loss', 0):.4f}"
+                    f"  Epoch {epoch:3d}: train_loss={train_loss / max(1, n_train):.4f} val_auc={val_auc:.4f} val_loss={val_metrics.get('loss', 0):.4f}"
                 )
 
-            # Early stopping
             if val_auc > best_val_auc:
                 best_val_auc = val_auc
                 patience_counter = 0
@@ -168,23 +163,24 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
                     break
         write_epoch_log(output_dir, fold_idx, epoch_rows)
 
-        # Evaluate best model on val set
         classifier.load_state_dict(load_checkpoint_weights(best_model_path, DEVICE))
-        val_metrics = evaluate_tensor_model(classifier, val_loader, criterion, DEVICE, USE_AMP)
+        val_metrics, labels, probs, preds = predict_tensor_model(
+            classifier, val_loader, criterion, DEVICE, USE_AMP
+        )
+        append_prediction_rows(prediction_rows, fold_idx, val_df, labels, probs, preds)
         val_metrics["split_strategy"] = split_strategy
         fold_metrics.append(val_metrics)
         print(f"  Best fold AUC: {best_val_auc:.4f}")
 
-    # Save fold-level results
-    fold_results = pd.DataFrame(fold_metrics)
-    fold_results.to_csv(output_dir / "fold_summary.csv", index=False)
+    pd.DataFrame(fold_metrics).to_csv(output_dir / "fold_summary.csv", index=False)
+    pd.DataFrame(prediction_rows).to_csv(output_dir / "pooled_predictions.csv", index=False)
     print(f"\nGeometry training complete. Results saved to {output_dir}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train geometry-only rupture model (v13 modular)")
+    parser = argparse.ArgumentParser(description="Train geometry-only rupture model (V14 modular)")
     parser.add_argument("--seed", type=int, default=SEED)
-    parser.add_argument("--backbone", choices=["pointnet2", "pointnext"], default="pointnet2")
+    parser.add_argument("--backbone", choices=["pointnet2", "pointnext"], default=DEFAULT_BACKBONE)
     parser.add_argument("--metadata-path", default=METADATA_PATH)
     parser.add_argument("--data-dir", default=DATA_DIR)
     parser.add_argument("--output-dir", default=None)

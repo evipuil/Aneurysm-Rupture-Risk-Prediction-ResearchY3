@@ -1,25 +1,27 @@
 # Aneurysm rupture model history
 
-This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 13. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 13**.
+This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 14. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 14**.
 
-The Version 13 source snapshot dates to June 15, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
+The Version 14 source snapshot dates to Mid-June-July 10, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
 
-## Version 13
+## Version 14
 
-Leakage controls, group-aware validation, and expanded evaluation metrics.
+Known-status filtering, expanded model families, and hardened execution.
 
-### Changes from Version 12
+### Changes from Version 13
 
-- Removed source, site, dataset, and identifier leakage from model inputs and exports.
-- Added patient/group-aware stratified cross-validation with a conservative fallback.
-- Added specificity, balanced accuracy, fixed-threshold F1, and Youden-threshold reporting.
+- Excluded blank or unknown rupture status before targets, folds, feature extraction, and metrics are constructed.
+- Added explicit status normalization, status auditing, a voxel CNN baseline, and fusion experiments.
+- Reworked flow augmentation, GNN construction and caching, pooled predictions, and PINN unit handling.
+- Hardened local and Slurm launchers and made result reporting current-run-only.
+- Added grouped, legacy-composite, and modality Shapley importance analyses.
 
 ## Code in this snapshot
 
-- Python: `base_trainer.py`, `feature_extraction.py`, `make_result_figures.py`, `model_architectures.py`, `run_non_pinn.py`, `train_clinical.py`, `train_flow_geometry.py`, `train_geometry.py`, `train_geometry_clinical.py`, `train_geometry_flow_clinical.py`, `train_gnn.py`, `train_pinn.py`, `train_pinn_carreau.py`
-- Shell: `run_non_pinn.sh`, `run_pinn.sh`
+- Python: `analyze_grouped_feature_importance.py`, `analyze_legacy_composite_importance.py`, `analyze_modality_shapley_importance.py`, `base_trainer.py`, `feature_extraction.py`, `fusion_percentage_sweep.py`, `fusion_strategy_benchmark.py`, `late_fusion_ensemble.py`, `make_result_figures.py`, `model_architectures.py`, `run_multimodal_local.py`, `run_non_pinn.py`, `rupture_status.py`, `tests/test_rupture_status.py`, `train_clinical.py`, `train_cnn.py`, `train_flow_geometry.py`, `train_geometry.py`, `train_geometry_clinical.py`, `train_geometry_flow_clinical.py`, `train_gnn.py`, `train_pinn.py`, `train_pinn_carreau.py`, `unknown_status_audit.py`, `visualize_pinn_flow.py`
+- Shell: `run_cnn.sh`, `run_flow_optimized.sh`, `run_non_pinn.sh`, `run_pinn.sh`
 
-Every Python and shell source carries a Version 13 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
+Every Python and shell source carries a Version 14 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
 
 ## Setup
 
@@ -54,12 +56,13 @@ Data is intentionally not stored here. Most snapshots expect a metadata CSV with
 | `v11` | May 2-9, 2026, with a later trainer maintenance pass | One training entry point for the full model suite plus resumable aggregation |
 | `v12` | May 9 prototype, finalized June 14, 2026 | Shared trainer and architecture modules with one entry point per model family |
 | `v13` | June 15, 2026 | Leakage controls, group-aware validation, and expanded evaluation metrics |
+| `v14` | Mid-June-July 10, 2026 | Known-status filtering, expanded model families, and hardened execution |
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed progression. Commit timestamps show the July 2026 import sequence; they do not claim that the original work happened on those commit dates.
 
 ## Scope and limitations
 
 - This history contains project source only. Manuscripts, manuscript-editing scripts, raw and derived datasets, metadata, predictions, result tables, figures, checkpoints, logs, rendered documents, virtual environments, and local tool state are excluded.
-- Result folders are outputs rather than independent source snapshots and are not represented as code tags.
+- Result folders labeled V15-V24 are outputs, not independent source snapshots, and are therefore not represented as code tags.
 - The snapshots preserve the modeling decisions of their versions. Cleanup is limited to stable filenames, import/launcher alignment, syntax repair, formatting, import hygiene, standardized comments, and removal of clearly redundant scaffolding.
 - Results should not be compared across tags without accounting for changes in cohorts, feature boundaries, split logic, status handling, and dependencies.

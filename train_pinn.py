@@ -1,6 +1,7 @@
-# Version 13 source snapshot
+# Version 14 source snapshot
 import argparse
 import csv
+import json
 import logging
 import os
 import sys
@@ -20,59 +21,61 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Configuration
 
-VTP_DIR = os.environ.get("v13_VTP_DIR", "vtp_data")
-OUTPUT_DIR = os.environ.get("v13_OUTPUT_DIR", "predictions/full_accuracy")
+VTP_DIR = os.environ.get("v14_VTP_DIR", "vtp_data")
+OUTPUT_DIR = os.environ.get("v14_OUTPUT_DIR", "predictions/full_accuracy")
 TRAINING_LOG_SUBDIR = "training_logs"
 
-STEADY_EPOCHS = int(os.environ.get("v13_STEADY_EPOCHS", 1000))
-UNSTEADY_EPOCHS = int(os.environ.get("v13_UNSTEADY_EPOCHS", 2000))
-LBFGS_ITERS = int(os.environ.get("v13_LBFGS_ITERS", 50))
-NT = int(os.environ.get("v13_NT", 10))
-N_INTERIOR = int(os.environ.get("v13_N_INTERIOR", 4096))
-N_WALL = int(os.environ.get("v13_N_WALL", 2048))
-N_INLET = int(os.environ.get("v13_N_INLET", 2048))
-N_OUTLET = int(os.environ.get("v13_N_OUTLET", N_INLET))
-COLLOC_BATCH = int(os.environ.get("v13_COLLOC_BATCH", 2048))
+STEADY_EPOCHS = int(os.environ.get("v14_STEADY_EPOCHS", 1000))
+UNSTEADY_EPOCHS = int(os.environ.get("v14_UNSTEADY_EPOCHS", 2000))
+LBFGS_ITERS = int(os.environ.get("v14_LBFGS_ITERS", 50))
+NT = int(os.environ.get("v14_NT", 10))
+N_INTERIOR = int(os.environ.get("v14_N_INTERIOR", 4096))
+N_WALL = int(os.environ.get("v14_N_WALL", 2048))
+N_INLET = int(os.environ.get("v14_N_INLET", 2048))
+N_OUTLET = int(os.environ.get("v14_N_OUTLET", N_INLET))
+COLLOC_BATCH = int(os.environ.get("v14_COLLOC_BATCH", 2048))
 T_END = 1.0
 MU = 0.0035
 RHO = 1060.0
-NU = MU / RHO
 
-FLOW_RATE = float(os.environ.get("v13_FLOW_RATE", 0.2))
-HIDDEN_DIM = int(os.environ.get("v13_HIDDEN_DIM", 128))
-N_LAYERS = int(os.environ.get("v13_N_LAYERS", 5))
-FOURIER_MODES = int(os.environ.get("v13_FOURIER_MODES", 16))
-FOURIER_SIGMA = float(os.environ.get("v13_FOURIER_SIGMA", 2.0))
+# V14 stores AneuX coordinates in millimetres and inlet flow in mL/s. Convert
+# both to SI units before deriving velocity, pressure, WSS, and RRT.
+GEOMETRY_UNIT_M = float(os.environ.get("v14_GEOMETRY_UNIT_M", 1e-3))
+FLOW_RATE_ML_S = float(os.environ.get("v14_FLOW_RATE_ML_S", os.environ.get("v14_FLOW_RATE", 0.2)))
+FLOW_RATE_M3_S = FLOW_RATE_ML_S * 1e-6
+HIDDEN_DIM = int(os.environ.get("v14_HIDDEN_DIM", 128))
+N_LAYERS = int(os.environ.get("v14_N_LAYERS", 5))
+FOURIER_MODES = int(os.environ.get("v14_FOURIER_MODES", 16))
+FOURIER_SIGMA = float(os.environ.get("v14_FOURIER_SIGMA", 2.0))
 
-LR = float(os.environ.get("v13_LR", 1e-3))
-WALL_LOSS_WEIGHT = float(os.environ.get("v13_WALL_W", 5.0))
-INLET_LOSS_WEIGHT = float(os.environ.get("v13_INLET_W", 5.0))
-OUTLET_LOSS_WEIGHT = float(os.environ.get("v13_OUTLET_W", 2.0))
-PHYSICS_LOSS_WEIGHT = float(os.environ.get("v13_PHYS_W", 1.0))
-PERIODIC_LOSS_WEIGHT = float(os.environ.get("v13_PERIODIC_W", 1.0))
-LOSS_WEIGHT_MODE = os.environ.get("v13_LOSS_WEIGHT_MODE", "fixed").strip().lower()
-LOSS_WEIGHT_LR = float(os.environ.get("v13_LOSS_WEIGHT_LR", 1e-3))
-GRAD_CLIP = float(os.environ.get("v13_GRAD_CLIP", 1.0))
-LOG_EVERY = int(os.environ.get("v13_LOG_EVERY", 25))
-LOSS_REF_EMA = float(os.environ.get("v13_LOSS_REF_EMA", 0.98))
-SCHEDULER_KIND = os.environ.get("v13_SCHEDULER", "warm_restarts").strip().lower()
-SCHEDULER_ETA_MIN = float(os.environ.get("v13_ETA_MIN", 1e-6))
-SCHEDULER_RESTART_T0 = int(os.environ.get("v13_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
-EARLY_STOP_PATIENCE = int(os.environ.get("v13_EARLY_STOP_PATIENCE", 200))
-SAVE_CHECKPOINT_EVERY = int(os.environ.get("v13_SAVE_CHECKPOINT_EVERY", 0))
-FIXED_COLLOCATION = os.environ.get("v13_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
+LR = float(os.environ.get("v14_LR", 1e-3))
+WALL_LOSS_WEIGHT = float(os.environ.get("v14_WALL_W", 5.0))
+INLET_LOSS_WEIGHT = float(os.environ.get("v14_INLET_W", 5.0))
+OUTLET_LOSS_WEIGHT = float(os.environ.get("v14_OUTLET_W", 2.0))
+PHYSICS_LOSS_WEIGHT = float(os.environ.get("v14_PHYS_W", 1.0))
+PERIODIC_LOSS_WEIGHT = float(os.environ.get("v14_PERIODIC_W", 1.0))
+GRAD_CLIP = float(os.environ.get("v14_GRAD_CLIP", 1.0))
+LOG_EVERY = int(os.environ.get("v14_LOG_EVERY", 25))
+LOSS_REF_EMA = float(os.environ.get("v14_LOSS_REF_EMA", 0.98))
+LOSS_REF_MODE = os.environ.get("v14_LOSS_REF_MODE", "initial").strip().lower()
+SCHEDULER_KIND = os.environ.get("v14_SCHEDULER", "warm_restarts").strip().lower()
+SCHEDULER_ETA_MIN = float(os.environ.get("v14_ETA_MIN", 1e-6))
+SCHEDULER_RESTART_T0 = int(os.environ.get("v14_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
+EARLY_STOP_PATIENCE = int(os.environ.get("v14_EARLY_STOP_PATIENCE", 200))
+SAVE_CHECKPOINT_EVERY = int(os.environ.get("v14_SAVE_CHECKPOINT_EVERY", 0))
+FIXED_COLLOCATION = os.environ.get("v14_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
 
-LIMIT = int(os.environ["v13_LIMIT"]) if os.environ.get("v13_LIMIT") else None
+LIMIT = int(os.environ["v14_LIMIT"]) if os.environ.get("v14_LIMIT") else None
 SEED = 42
-UNSTEADY = os.environ.get("v13_UNSTEADY", "1").lower() in {"1", "true", "yes"}
-REQUIRE_GPU = os.environ.get("v13_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
-CUDA_INDEX = int(os.environ.get("v13_CUDA_DEVICE", 0))
+UNSTEADY = os.environ.get("v14_UNSTEADY", "1").lower() in {"1", "true", "yes"}
+REQUIRE_GPU = os.environ.get("v14_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
+CUDA_INDEX = int(os.environ.get("v14_CUDA_DEVICE", 0))
 
 
 def _resolve_device():
     if not torch.cuda.is_available():
         if REQUIRE_GPU:
-            raise RuntimeError("CUDA required. Set v13_REQUIRE_GPU=0 to allow CPU.")
+            raise RuntimeError("CUDA required. Set v14_REQUIRE_GPU=0 to allow CPU.")
         return torch.device("cpu")
     idx = max(0, min(CUDA_INDEX, torch.cuda.device_count() - 1))
     torch.cuda.set_device(idx)
@@ -91,41 +94,36 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 TRAINING_LOG_DIR = Path(OUTPUT_DIR) / TRAINING_LOG_SUBDIR
 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logger = logging.getLogger("v13PINNPipeline")
+logger = logging.getLogger("V14PINNPipeline")
 logger.setLevel(logging.INFO)
 logger.handlers.clear()
-_fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-_ch = logging.StreamHandler()
-_ch.setFormatter(_fmt)
-logger.addHandler(_ch)
-_fh = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
-_fh.setFormatter(_fmt)
-logger.addHandler(_fh)
+LOG_FORMATTER = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(LOG_FORMATTER)
+logger.addHandler(console_handler)
+file_handler = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
+file_handler.setFormatter(LOG_FORMATTER)
+logger.addHandler(file_handler)
 
 
-class UncertaintyConstraintWeights(nn.Module):
-    """Learn positive PINN constraint weights using homoscedastic uncertainty.
+def configure_output_paths(output_dir: str | Path) -> None:
+    """Refresh output-dependent globals after CLI/env overrides."""
+    global OUTPUT_DIR, TRAINING_LOG_DIR
+    OUTPUT_DIR = str(output_dir)
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    TRAINING_LOG_DIR = Path(OUTPUT_DIR) / TRAINING_LOG_SUBDIR
+    TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    Initial effective weights equal the configured fixed weights. The objective
-    sum(exp(-s_i) * L_i + s_i) prevents the trivial all-zero-weight solution.
-    """
-
-    def __init__(self, names, initial_weights):
-        super().__init__()
-        self.names = list(names)
-        initial = torch.as_tensor(initial_weights, dtype=torch.float32).clamp_min(1e-6)
-        self.log_variances = nn.Parameter(-torch.log(initial))
-
-    def forward(self, losses):
-        stacked = torch.stack(list(losses))
-        precision = torch.exp(-self.log_variances)
-        return torch.sum(precision * stacked + self.log_variances)
-
-    def effective_weights(self):
-        return torch.exp(-self.log_variances)
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            handler.close()
+    file_handler = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
+    file_handler.setFormatter(LOG_FORMATTER)
+    logger.addHandler(file_handler)
 
 
-# Geometry helpers
+# Geometry
 
 
 def _gradients(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -144,11 +142,13 @@ def compute_case_scales(surface, inlet_cap):
         if hasattr(inlet_cap, "area") and inlet_cap.area > 0
         else float(max(inlet_cap.n_points, 1))
     )
-    inlet_speed = FLOW_RATE / max(inlet_area, 1e-8)
+    length_scale_m = length_scale * GEOMETRY_UNIT_M
+    inlet_area_m2 = inlet_area * GEOMETRY_UNIT_M**2
+    inlet_speed = FLOW_RATE_M3_S / max(inlet_area_m2, 1e-12)
     velocity_scale = float(max(inlet_speed, 1e-6))
-    time_scale = float(max(length_scale / velocity_scale, 1e-6))
+    time_scale = float(max(length_scale_m / velocity_scale, 1e-6))
     pressure_scale = float(max(RHO * velocity_scale * velocity_scale, 1e-6))
-    reynolds = float(max(RHO * velocity_scale * length_scale / MU, 1.0))
+    reynolds = float(max(RHO * velocity_scale * length_scale_m / MU, 1.0))
     return length_scale, velocity_scale, time_scale, pressure_scale, reynolds
 
 
@@ -233,7 +233,8 @@ def pick_inlet(surface):
         if hasattr(inlet_cap, "area") and inlet_cap.area > 0
         else float(max(inlet_cap.n_points, 1))
     )
-    inlet_speed = FLOW_RATE / max(inlet_area, 1e-8)
+    inlet_area_m2 = inlet_area * GEOMETRY_UNIT_M**2
+    inlet_speed = FLOW_RATE_M3_S / max(inlet_area_m2, 1e-12)
     return inlet_cap, (inlet_speed * normal).astype(np.float32), outlet_caps
 
 
@@ -292,12 +293,12 @@ def extract_wall_points(surface, n_wall: int):
     return pts, normals
 
 
-# Model
+# Network
 class FourierFeatures(nn.Module):
     def __init__(self, in_dim: int, modes: int, sigma: float):
         super().__init__()
-        B = torch.randn(in_dim, modes) * sigma
-        self.register_buffer("B", B)
+        projection_matrix = torch.randn(in_dim, modes) * sigma
+        self.register_buffer("B", projection_matrix)
 
     def forward(self, x):
         proj = 2 * np.pi * x @ self.B
@@ -312,16 +313,17 @@ class PINNNet(nn.Module):
         self.features = FourierFeatures(in_dim, modes, sigma)
         feat_dim = 2 * modes + in_dim
         self.input_proj = nn.Linear(feat_dim, hidden)
-        self.blocks = nn.ModuleList()
-        for _ in range(layers):
-            self.blocks.append(
+        self.blocks = nn.ModuleList(
+            [
                 nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
-            )
+                for _ in range(layers)
+            ]
+        )
         self.head = nn.Linear(hidden, 4)
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight, gain=1.0)
-                nn.init.zeros_(m.bias)
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_normal_(module.weight, gain=1.0)
+                nn.init.zeros_(module.bias)
 
     def forward(self, x):
         h = F.silu(self.input_proj(self.features(x)))
@@ -334,7 +336,7 @@ def pulsatile_scale(t, t_end: float = T_END):
     return 1.0 + 0.6 * torch.sin(2 * np.pi * t / t_end)
 
 
-# Physics loss
+# Training
 def physics_residual(model, xt_int, unsteady: bool, reynolds: float):
     """Compute Navier-Stokes residuals at collocation points."""
     xt_int = xt_int.requires_grad_(True)
@@ -381,7 +383,7 @@ def physics_residual(model, xt_int, unsteady: bool, reynolds: float):
 
 
 def sample_collocation(x_pool, unsteady, batch_size, device):
-    """Return (batch_size, 4) -- (x, y, z, t) sampled uniformly from the interior."""
+    """Sample interior coordinates and a corresponding time value."""
     n = x_pool.shape[0]
     idx = torch.randint(0, n, (batch_size,), device=device)
     x = x_pool[idx]
@@ -407,29 +409,9 @@ def train_pinn(
     pressure_scale: float,
     reynolds: float,
 ):
-    """Train PINN with adaptive loss weights + optional L-BFGS polish (steady)."""
+    """Train PINN with loss normalization + optional L-BFGS polish (steady)."""
     model = PINNNet().to(DEVICE)
-    constraint_names = ["physics", "wall", "inlet", "outlet"] + (["periodic"] if unsteady else [])
-    initial_constraint_weights = [
-        PHYSICS_LOSS_WEIGHT,
-        WALL_LOSS_WEIGHT,
-        INLET_LOSS_WEIGHT,
-        OUTLET_LOSS_WEIGHT,
-    ] + ([PERIODIC_LOSS_WEIGHT] if unsteady else [])
-    adaptive_weights = None
-    optimizer_groups = [{"params": model.parameters(), "lr": LR}]
-    if LOSS_WEIGHT_MODE == "uncertainty":
-        adaptive_weights = UncertaintyConstraintWeights(
-            constraint_names, initial_constraint_weights
-        ).to(DEVICE)
-        optimizer_groups.append({"params": adaptive_weights.parameters(), "lr": LOSS_WEIGHT_LR})
-        logger.info(
-            "Using learnable uncertainty-based PINN constraint weights initialized from %s",
-            dict(zip(constraint_names, initial_constraint_weights)),
-        )
-    elif LOSS_WEIGHT_MODE != "fixed":
-        raise ValueError("v13_LOSS_WEIGHT_MODE must be 'fixed' or 'uncertainty'")
-    optimizer = torch.optim.Adam(optimizer_groups)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     if SCHEDULER_KIND == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
@@ -459,7 +441,11 @@ def train_pinn(
     inlet_ref: float = 0.0
     outlet_ref: float = 0.0
     periodic_ref: float = 0.0
+    if LOSS_REF_MODE not in {"initial", "ema", "none"}:
+        raise ValueError("v14_LOSS_REF_MODE must be one of: initial, ema, none")
+
     best_loss = float("inf")
+    best_objective_loss = float("inf")
     best_epoch = 0
     best_state = None
     no_improve = 0
@@ -524,72 +510,84 @@ def train_pinn(
         else:
             loss_periodic = torch.zeros(1, device=DEVICE)
 
-        if phys_ref == 0.0:
+        raw_loss = (
+            PHYSICS_LOSS_WEIGHT * loss_phys
+            + WALL_LOSS_WEIGHT * loss_wall
+            + INLET_LOSS_WEIGHT * loss_inlet
+            + OUTLET_LOSS_WEIGHT * loss_outlet
+            + (PERIODIC_LOSS_WEIGHT * loss_periodic if unsteady else 0.0)
+        )
+
+        if LOSS_REF_MODE == "none":
+            loss = raw_loss
+        elif phys_ref == 0.0:
             phys_ref = float(loss_phys.detach()) + 1e-12
             wall_ref = float(loss_wall.detach()) + 1e-12
             inlet_ref = float(loss_inlet.detach()) + 1e-12
             outlet_ref = float(loss_outlet.detach()) + 1e-12
             periodic_ref = float(loss_periodic.detach()) + 1e-12
+            loss = (
+                PHYSICS_LOSS_WEIGHT * loss_phys / phys_ref
+                + WALL_LOSS_WEIGHT * loss_wall / wall_ref
+                + INLET_LOSS_WEIGHT * loss_inlet / inlet_ref
+                + OUTLET_LOSS_WEIGHT * loss_outlet / outlet_ref
+                + (PERIODIC_LOSS_WEIGHT * loss_periodic / periodic_ref if unsteady else 0.0)
+            )
         else:
             m = min(max(LOSS_REF_EMA, 0.0), 0.9999)
-            phys_ref = m * phys_ref + (1.0 - m) * (float(loss_phys.detach()) + 1e-12)
-            wall_ref = m * wall_ref + (1.0 - m) * (float(loss_wall.detach()) + 1e-12)
-            inlet_ref = m * inlet_ref + (1.0 - m) * (float(loss_inlet.detach()) + 1e-12)
-            outlet_ref = m * outlet_ref + (1.0 - m) * (float(loss_outlet.detach()) + 1e-12)
-            periodic_ref = m * periodic_ref + (1.0 - m) * (float(loss_periodic.detach()) + 1e-12)
-        normalized_losses = [
-            loss_phys / phys_ref,
-            loss_wall / wall_ref,
-            loss_inlet / inlet_ref,
-            loss_outlet / outlet_ref,
-        ] + ([loss_periodic / periodic_ref] if unsteady else [])
-        if adaptive_weights is None:
-            loss = sum(
-                weight * component
-                for weight, component in zip(initial_constraint_weights, normalized_losses)
+            if LOSS_REF_MODE == "ema":
+                phys_ref = m * phys_ref + (1.0 - m) * (float(loss_phys.detach()) + 1e-12)
+                wall_ref = m * wall_ref + (1.0 - m) * (float(loss_wall.detach()) + 1e-12)
+                inlet_ref = m * inlet_ref + (1.0 - m) * (float(loss_inlet.detach()) + 1e-12)
+                outlet_ref = m * outlet_ref + (1.0 - m) * (float(loss_outlet.detach()) + 1e-12)
+                periodic_ref = m * periodic_ref + (1.0 - m) * (
+                    float(loss_periodic.detach()) + 1e-12
+                )
+            loss = (
+                PHYSICS_LOSS_WEIGHT * loss_phys / phys_ref
+                + WALL_LOSS_WEIGHT * loss_wall / wall_ref
+                + INLET_LOSS_WEIGHT * loss_inlet / inlet_ref
+                + OUTLET_LOSS_WEIGHT * loss_outlet / outlet_ref
+                + (PERIODIC_LOSS_WEIGHT * loss_periodic / periodic_ref if unsteady else 0.0)
             )
-            effective_weights = torch.as_tensor(
-                initial_constraint_weights, dtype=torch.float32, device=DEVICE
-            )
-        else:
-            loss = adaptive_weights(normalized_losses)
-            effective_weights = adaptive_weights.effective_weights()
         loss.backward()
         if GRAD_CLIP > 0:
             nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         optimizer.step()
-        if adaptive_weights is not None:
-            with torch.no_grad():
-                adaptive_weights.log_variances.clamp_(-4.0, 4.0)
         if scheduler is not None:
             scheduler.step()
 
-        lv = float(loss.item())
-        if lv < best_loss:
-            best_loss = lv
+        objective_lv = float(loss.item())
+        raw_lv = float(raw_loss.item())
+        if raw_lv < best_loss:
+            best_loss = raw_lv
+            best_objective_loss = objective_lv
             best_epoch = epoch + 1
-            best_state = {
-                "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
-                "adaptive_weights": (
-                    {k: v.detach().cpu().clone() for k, v in adaptive_weights.state_dict().items()}
-                    if adaptive_weights is not None
-                    else None
-                ),
-            }
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             try:
                 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
-                best_path = Path(TRAINING_LOG_DIR) / f"{case_name}_best.pt"
-                # Preserve the historical fixed-mode checkpoint format. The
-                # adaptive mode additionally stores its learned weight state.
-                torch.save(
-                    best_state if adaptive_weights is not None else best_state["model"], best_path
-                )
+                best_path = TRAINING_LOG_DIR / f"{case_name}_best.pt"
+                torch.save(model.state_dict(), best_path)
                 logger.info("Saved best checkpoint: %s (epoch %d)", best_path, epoch + 1)
             except Exception as exc:
                 logger.warning("Failed to save best checkpoint: %s", exc)
             no_improve = 0
         else:
             no_improve += 1
+
+        history_row = {
+            "epoch": epoch + 1,
+            "total_loss": raw_lv,
+            "objective_loss": objective_lv,
+            "physics_loss": float(loss_phys.item()),
+            "wall_loss": float(loss_wall.item()),
+            "inlet_loss": float(loss_inlet.item()),
+            "outlet_loss": float(loss_outlet.item()),
+            "periodic_loss": float(loss_periodic.item()),
+            "lr": float(optimizer.param_groups[0]["lr"]),
+            "epoch_time_sec": float(time.time() - t_start),
+        }
+        history.append(history_row)
 
         if SAVE_CHECKPOINT_EVERY > 0 and ((epoch + 1) % SAVE_CHECKPOINT_EVERY == 0):
             try:
@@ -604,47 +602,26 @@ def train_pinn(
                 "Early stopping triggered (no improvement for %d epochs)", EARLY_STOP_PATIENCE
             )
             break
-        history.append(
-            {
-                "epoch": epoch + 1,
-                "total_loss": lv,
-                "physics_loss": float(loss_phys.item()),
-                "wall_loss": float(loss_wall.item()),
-                "inlet_loss": float(loss_inlet.item()),
-                "outlet_loss": float(loss_outlet.item()),
-                "periodic_loss": float(loss_periodic.item()),
-                "lr": float(optimizer.param_groups[0]["lr"]),
-                "epoch_time_sec": float(time.time() - t_start),
-                "loss_weight_mode": LOSS_WEIGHT_MODE,
-                **{
-                    f"{name}_effective_weight": float(value)
-                    for name, value in zip(
-                        constraint_names, effective_weights.detach().cpu().tolist()
-                    )
-                },
-            }
-        )
 
         if (epoch + 1) % LOG_EVERY == 0 or epoch == 0 or epoch == epochs - 1:
             logger.info(
-                "[%s][%s] epoch %d/%d | total=%.3e phys=%.3e wall=%.3e inlet=%.3e",
+                "[%s][%s] epoch %d/%d | total=%.3e objective=%.3e | "
+                "phys=%.3e wall=%.3e inlet=%.3e outlet=%.3e",
                 case_name,
                 "unsteady" if unsteady else "steady",
                 epoch + 1,
                 epochs,
-                lv,
+                raw_lv,
+                objective_lv,
                 loss_phys.item(),
                 loss_wall.item(),
                 loss_inlet.item(),
+                loss_outlet.item(),
             )
-            pbar.set_postfix({"total": f"{lv:.3e}"})
+            pbar.set_postfix({"total": f"{raw_lv:.3e}", "objective": f"{objective_lv:.3e}"})
 
     if best_state is not None:
-        model.load_state_dict({k: v.to(DEVICE) for k, v in best_state["model"].items()})
-        if adaptive_weights is not None and best_state["adaptive_weights"] is not None:
-            adaptive_weights.load_state_dict(
-                {k: v.to(DEVICE) for k, v in best_state["adaptive_weights"].items()}
-            )
+        model.load_state_dict({k: v.to(DEVICE) for k, v in best_state.items()})
 
     if not unsteady and LBFGS_ITERS > 0:
         logger.info("[%s] L-BFGS polish for %d iterations", case_name, LBFGS_ITERS)
@@ -690,18 +667,11 @@ def train_pinn(
                 )
             else:
                 loss_o = torch.zeros(1, device=DEVICE)
-            normalized_lbfgs = [
-                loss_p / phys_ref,
-                loss_w / wall_ref,
-                loss_i / inlet_ref,
-                loss_o / outlet_ref,
-            ]
-            if adaptive_weights is None:
-                lbfgs_weights = initial_constraint_weights[:4]
-            else:
-                lbfgs_weights = adaptive_weights.effective_weights().detach().cpu().tolist()[:4]
-            loss_l = sum(
-                weight * component for weight, component in zip(lbfgs_weights, normalized_lbfgs)
+            loss_l = (
+                PHYSICS_LOSS_WEIGHT * loss_p / phys_ref
+                + WALL_LOSS_WEIGHT * loss_w / wall_ref
+                + INLET_LOSS_WEIGHT * loss_i / inlet_ref
+                + OUTLET_LOSS_WEIGHT * loss_o / outlet_ref
             )
             loss_l.backward()
             return loss_l
@@ -716,29 +686,19 @@ def train_pinn(
         "epochs_completed": int(len(history)),
         "best_epoch": int(best_epoch),
         "best_total_loss": float(best_loss),
+        "best_objective_loss": float(best_objective_loss),
         "final_physics_loss": float(history[-1]["physics_loss"] if history else 0.0),
         "final_wall_loss": float(history[-1]["wall_loss"] if history else 0.0),
         "final_inlet_loss": float(history[-1]["inlet_loss"] if history else 0.0),
+        "final_outlet_loss": float(history[-1]["outlet_loss"] if history else 0.0),
         "avg_epoch_time_sec": float(np.mean([h["epoch_time_sec"] for h in history]))
         if history
         else 0.0,
-        "loss_weight_mode": LOSS_WEIGHT_MODE,
     }
-    final_weights = (
-        adaptive_weights.effective_weights().detach().cpu().tolist()
-        if adaptive_weights is not None
-        else initial_constraint_weights
-    )
-    stats.update(
-        {
-            f"final_{name}_weight": float(value)
-            for name, value in zip(constraint_names, final_weights)
-        }
-    )
     return model, history, stats
 
 
-# Post-training evaluation + hemodynamic metrics
+# Evaluation and hemodynamic metrics
 def evaluate_flow(
     model,
     x_all,
@@ -779,7 +739,8 @@ def compute_wss(
     w_g = _gradients(w, xt_wall)
 
     grad = torch.stack([u_g[:, :3], v_g[:, :3], w_g[:, :3]], dim=1)
-    grad = (velocity_scale / max(length_scale, 1e-6)) * grad
+    length_scale_m = max(length_scale * GEOMETRY_UNIT_M, 1e-9)
+    grad = (velocity_scale / length_scale_m) * grad
 
     normals = wall_normals / (torch.norm(wall_normals, dim=1, keepdim=True) + 1e-12)
     strain = grad + grad.transpose(1, 2)
@@ -824,21 +785,21 @@ def compute_tawss(wss_history):
     return mags.mean(dim=0)
 
 
-# Per-case processing
+# Case processing
 def _write_training_logs(case_name, history, summary):
     if history:
-        with open(TRAINING_LOG_DIR / f"{case_name}_epoch_losses.csv", "w", newline="") as f:
+        with open(TRAINING_LOG_DIR / f"{case_name}_epoch_losses.csv", "w", newline="") as handle:
             fields = list(history[0].keys())
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
-            w.writerows(history)
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(history)
     summary_path = TRAINING_LOG_DIR / "case_training_summary.csv"
     write_header = not summary_path.exists()
-    with open(summary_path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(summary.keys()))
+    with open(summary_path, "a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(summary.keys()))
         if write_header:
-            w.writeheader()
-        w.writerow(summary)
+            writer.writeheader()
+        writer.writerow(summary)
 
 
 def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
@@ -997,6 +958,25 @@ def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
     wall_mesh["VonMises"] = von_mises_np
     wall_mesh.save(case_dir / "hemodynamics_aggregate.vtp")
 
+    with open(case_dir / "hemodynamic_units.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "coordinate_input_unit": "mm",
+                "geometry_unit_m": GEOMETRY_UNIT_M,
+                "flow_rate_input_unit": "mL/s",
+                "flow_rate_mL_s": FLOW_RATE_ML_S,
+                "velocity_unit": "m/s",
+                "pressure_unit": "Pa",
+                "wss_unit": "Pa",
+                "tawss_unit": "Pa",
+                "rrt_unit": "1/Pa",
+                "osi_unit": "dimensionless",
+                "von_mises_unit": "Pa",
+            },
+            f,
+            indent=2,
+        )
+
     torch.save(model.state_dict(), case_dir / "pinn_model.pt")
 
     total_time = time.time() - start_time
@@ -1011,18 +991,20 @@ def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
         "n_outlet": int(len(outlet_pts)),
         "reynolds": float(reynolds),
         "length_scale": float(length_scale),
+        "length_scale_m": float(length_scale * GEOMETRY_UNIT_M),
         "velocity_scale": float(velocity_scale),
+        "flow_rate_mL_s": float(FLOW_RATE_ML_S),
+        "geometry_unit_m": float(GEOMETRY_UNIT_M),
     }
     _write_training_logs(case_name, history, summary)
     logger.info("Completed %s in %.1fs (train %.1fs)", case_name, total_time, train_time)
     return summary
 
 
-# Main
 def main():
-    global VTP_DIR, OUTPUT_DIR, STEADY_EPOCHS, UNSTEADY_EPOCHS, UNSTEADY, LIMIT
+    global VTP_DIR, STEADY_EPOCHS, UNSTEADY_EPOCHS, UNSTEADY, LIMIT
 
-    parser = argparse.ArgumentParser(description="Train PINN flow simulation pipeline (v13)")
+    parser = argparse.ArgumentParser(description="Train PINN flow simulation pipeline (V14)")
     parser.add_argument(
         "--vtp-dir", default=VTP_DIR, help="Directory containing VTP geometry files"
     )
@@ -1042,20 +1024,22 @@ def main():
     args = parser.parse_args()
 
     VTP_DIR = args.vtp_dir
-    OUTPUT_DIR = args.output_dir
+    configure_output_paths(args.output_dir)
     STEADY_EPOCHS = args.steady_epochs
     UNSTEADY_EPOCHS = args.unsteady_epochs
     UNSTEADY = args.unsteady
     LIMIT = args.limit
 
     logger.info(
-        "Device: %s | unsteady=%s | epochs(steady/unsteady)=%d/%d | NT=%d | LR=%.2e",
+        "Device: %s | unsteady=%s | epochs(steady/unsteady)=%d/%d | "
+        "NT=%d | LR=%.2e | loss_ref_mode=%s",
         DEVICE,
         UNSTEADY,
         STEADY_EPOCHS,
         UNSTEADY_EPOCHS,
         NT,
         LR,
+        LOSS_REF_MODE,
     )
     vtp_dir = Path(VTP_DIR)
     if not vtp_dir.exists():
