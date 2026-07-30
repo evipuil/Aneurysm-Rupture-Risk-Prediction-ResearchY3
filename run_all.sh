@@ -1,17 +1,17 @@
 #!/bin/bash
-# Version 9 source snapshot
+# Version 10 source snapshot
 #SBATCH --partition=gpu2
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --mem=32GB
-#SBATCH --output=output_v9.txt
-#SBATCH --error=error_v9.txt
+#SBATCH --output=output_v10.txt
+#SBATCH --error=error_v10.txt
 
-# Runs full training for every v9 model combination and writes a separate output tree per run.
+# V10: train the multibranch model across multiple seeds and optionally
+# aggregate the seed-level pooled predictions into a final ensemble.
 set -euo pipefail
 
-# Determine script dir and project root; export POINTNET_ROOT for Python bootstraps
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )}"
 POINTNET_ROOT="${POINTNET_ROOT:-}"
 if [ -z "$POINTNET_ROOT" ]; then
@@ -31,80 +31,68 @@ PY="${PYTHON:-python}"
 cd "$SCRIPT_DIR"
 
 resolve_output_root() {
-  if [[ -n "${V9_OUTPUT_DIR:-}" ]]; then
-    printf '%s' "$V9_OUTPUT_DIR"
+  if [[ -n "${V10_OUTPUT_DIR:-}" ]]; then
+    printf '%s' "$V10_OUTPUT_DIR"
     return 0
   fi
 
   local candidate
   for candidate in "${SCRATCH:-}" "${SLURM_TMPDIR:-}" "${HOME:-}" "$SCRIPT_DIR"; do
     [[ -n "$candidate" ]] || continue
-    if mkdir -p "$candidate/results_v9_flow_geometry" 2>/dev/null; then
-      printf '%s' "$candidate/results_v9_flow_geometry"
+    if mkdir -p "$candidate/results_v10_multibranch" 2>/dev/null; then
+      printf '%s' "$candidate/results_v10_multibranch"
       return 0
     fi
   done
 
-  printf '%s' "$PWD/results_v9_flow_geometry"
+  printf '%s' "$SCRIPT_DIR/results_v10_multibranch"
 }
 
-FLOW_MODES=(late attention early)
-ENSEMBLE_MODES=(late attention early)
 OUTPUT_ROOT="$(resolve_output_root)"
 mkdir -p "$OUTPUT_ROOT"
 
+IFS=' ' read -r -a SEEDS <<< "${V10_SEEDS:-42 1337 2024}"
 AMP_ARGS=()
-if [[ "${V9_AMP:-1}" == "1" || "${V9_AMP:-1}" =~ ^(true|TRUE|yes|YES)$ ]]; then
+if [[ "${V10_AMP:-1}" == "1" || "${V10_AMP:-1}" =~ ^(true|TRUE|yes|YES)$ ]]; then
   AMP_ARGS+=(--amp)
 fi
 
 EXTRA_ARGS=()
-if [[ "${V9_DRY_RUN:-0}" == "1" || "${V9_DRY_RUN:-0}" =~ ^(true|TRUE|yes|YES)$ ]]; then
+if [[ "${V10_DRY_RUN:-0}" == "1" || "${V10_DRY_RUN:-0}" =~ ^(true|TRUE|yes|YES)$ ]]; then
   EXTRA_ARGS+=(--dry-run)
 fi
 
-for m in "${FLOW_MODES[@]}"; do
-  RUN_DIR="$OUTPUT_ROOT/flow_${m}"
+SEED_DIRS=()
+for seed in "${SEEDS[@]}"; do
+  RUN_DIR="$OUTPUT_ROOT/seed_${seed}"
   mkdir -p "$RUN_DIR"
-  printf '\n=== FULL TRAINING: FUSION_MODE=%s ===\n' "$m"
-  FUSION_MODE="$m" V9_OUTPUT_DIR="$RUN_DIR" "$PY" "$SCRIPT_DIR/train_flow_geometry.py" \
-    --fusion "$m" \
-    --metadata-path "${V9_METADATA:-metadata.csv}" \
-    --data-dir "${V9_DATA_DIR:-predictions/pinn_corrected}" \
+  printf '\n=== FULL TRAINING: V10 seed=%s ===\n' "$seed"
+  "$PY" "$SCRIPT_DIR/train_ensemble.py" \
+    --seed "$seed" \
+    --cv-seed "${V10_CV_SEED:-42}" \
+    --metadata-path "${V10_METADATA:-metadata.csv}" \
+    --data-dir "${V10_DATA_DIR:-predictions/pinn_corrected}" \
     --output-dir "$RUN_DIR" \
-    --folds "${V9_FOLDS:-5}" \
-    --batch-size "${V9_BATCH:-8}" \
-    --epochs "${V9_EPOCHS:-200}" \
-    --lr "${V9_LR:-1e-4}" \
-    --weight-decay "${V9_WD:-1e-4}" \
-    --patience "${V9_PATIENCE:-40}" \
+    --folds "${V10_FOLDS:-5}" \
+    --batch-size "${V10_BATCH:-6}" \
+    --epochs "${V10_EPOCHS:-220}" \
+    --lr "${V10_LR:-3e-4}" \
+    --weight-decay "${V10_WD:-2e-4}" \
+    --target-n "${V10_TARGET_N:-4096}" \
+    --patience "${V10_PATIENCE:-35}" \
     "${AMP_ARGS[@]}" \
     "${EXTRA_ARGS[@]}" \
-    2>&1 | tee "$RUN_DIR/train_${m}.log"
+    2>&1 | tee "$RUN_DIR/train_seed_${seed}.log"
+  SEED_DIRS+=("$RUN_DIR")
 done
 
-ENSEMBLE_AMP_ARGS=()
-if [[ "${V9E_AMP:-1}" == "1" || "${V9E_AMP:-1}" =~ ^(true|TRUE|yes|YES)$ ]]; then
-  ENSEMBLE_AMP_ARGS+=(--amp)
+if [[ "${V10_DRY_RUN:-0}" != "1" && ( "${V10_RUN_AGG:-1}" == "1" || "${V10_RUN_AGG:-1}" =~ ^(true|TRUE|yes|YES)$ ) ]]; then
+  FINAL_DIR="$OUTPUT_ROOT/seed_ensemble"
+  mkdir -p "$FINAL_DIR"
+  printf '\n=== AGGREGATING SEED ENSEMBLE ===\n'
+  "$PY" "$SCRIPT_DIR/aggregate_predictions.py" \
+    --output-dir "$FINAL_DIR" \
+    --seed-dirs "${SEED_DIRS[@]}"
 fi
 
-for m in "${ENSEMBLE_MODES[@]}"; do
-  RUN_DIR="$OUTPUT_ROOT/ensemble_${m}"
-  mkdir -p "$RUN_DIR"
-  printf '\n=== FULL TRAINING: STACKING ENSEMBLE (base_fusion=%s) ===\n' "$m"
-  V9E_OUTPUT_DIR="$RUN_DIR" "$PY" "$SCRIPT_DIR/train_ensemble.py" \
-    --base-fusion "$m" \
-    --metadata-path "${V9E_METADATA:-metadata.csv}" \
-    --data-dir "${V9E_DATA_DIR:-predictions/pinn_corrected}" \
-    --output-dir "$RUN_DIR" \
-    --folds "${V9E_FOLDS:-5}" \
-    --batch-size "${V9E_BATCH:-8}" \
-    --epochs "${V9E_EPOCHS:-200}" \
-    --lr "${V9E_LR:-1e-4}" \
-    --weight-decay "${V9E_WD:-1e-4}" \
-    --patience "${V9E_PATIENCE:-40}" \
-    "${ENSEMBLE_AMP_ARGS[@]}" \
-    2>&1 | tee "$RUN_DIR/train_stack_${m}.log"
-done
-
-printf '\nAll v9 full-training runs completed successfully.\n'
+printf '\nAll v10 runs completed successfully.\n'

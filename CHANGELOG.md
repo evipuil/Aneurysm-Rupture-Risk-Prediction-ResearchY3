@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 10
+
+Source snapshot: May 1, 2026.
+
+- Replaced the Version 9 experiment pair with a unified multibranch classifier.
+- Added auxiliary branch losses, fold-level normalization, and balanced sampling.
+- Added pooled prediction aggregation across seeds.
+
 ## Version 9
 
 Source snapshot: April 29-30, 2026.

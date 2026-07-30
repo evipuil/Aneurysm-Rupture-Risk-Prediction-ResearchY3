@@ -1,25 +1,25 @@
 # Aneurysm rupture model history
 
-This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 9. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 9**.
+This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 10. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 10**.
 
-The Version 9 source snapshot dates to April 29-30, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
+The Version 10 source snapshot dates to May 1, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
 
-## Version 9
+## Version 10
 
-Configurable early, late, and attention fusion experiments.
+Gated geometry, flow, clinical, and global-feature ensemble.
 
-### Changes from Version 8
+### Changes from Version 9
 
-- Added switchable early, late, and attention fusion modes.
-- Added a lightweight dry run for tensor-shape validation.
-- Refined stacked ensembling and multi-seed execution.
+- Replaced the Version 9 experiment pair with a unified multibranch classifier.
+- Added auxiliary branch losses, fold-level normalization, and balanced sampling.
+- Added pooled prediction aggregation across seeds.
 
 ## Code in this snapshot
 
-- Python: `train_ensemble.py`, `train_flow_geometry.py`
+- Python: `aggregate_predictions.py`, `train_ensemble.py`
 - Shell: `run_all.sh`
 
-Every Python and shell source carries a Version 9 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
+Every Python and shell source carries a Version 10 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
 
 ## Setup
 
@@ -50,6 +50,7 @@ Data is intentionally not stored here. Most snapshots expect a metadata CSV with
 | `v7` | April 21-May 4, 2026 | Shared helpers, compact trainers, and a direct VTP-to-PINN pipeline |
 | `v8` | April 28-29, 2026 | Self-contained PointNeXt-style geometry, flow, and stacking experiments |
 | `v9` | April 29-30, 2026 | Configurable early, late, and attention fusion experiments |
+| `v10` | May 1, 2026 | Gated geometry, flow, clinical, and global-feature ensemble |
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed progression. Commit timestamps show the July 2026 import sequence; they do not claim that the original work happened on those commit dates.
 
