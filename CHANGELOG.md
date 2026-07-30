@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 9
+
+Source snapshot: April 29-30, 2026.
+
+- Added switchable early, late, and attention fusion modes.
+- Added a lightweight dry run for tensor-shape validation.
+- Refined stacked ensembling and multi-seed execution.
+
 ## Version 8
 
 Source snapshot: April 28-29, 2026.
