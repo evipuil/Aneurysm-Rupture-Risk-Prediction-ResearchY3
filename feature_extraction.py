@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,7 @@ try:
     from sklearn.inspection import permutation_importance
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import average_precision_score, roc_auc_score
-    from sklearn.model_selection import StratifiedKFold
+    from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
 except Exception as exc:  # pragma: no cover - import error is reported at runtime
@@ -29,7 +29,18 @@ except Exception as exc:  # pragma: no cover - import error is reported at runti
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_METADATA_PATH = PROJECT_ROOT / "metadata.csv"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "predictions" / "pinn_corrected"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results_v12_feature_extraction"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results_v13_feature_extraction"
+SAFE_CLINICAL_CATEGORICAL_FIELDS = ("location", "side")
+INTERNAL_METADATA_COLUMNS = {"case_name", "patient_group", "vesselFileID", "cutToShow"}
+PUBLIC_METADATA_COLUMNS = ("case_id", "target")
+NON_FEATURE_COLUMNS = {"case_id", "target", *INTERNAL_METADATA_COLUMNS}
+LEAKAGE_PREFIXES = (
+    "clinical_source=",
+    "clinical_hospital=",
+    "clinical_dataset=",
+    "clinical_patient",
+    "clinical_vessel",
+)
 
 
 def _safe_float(value, default=0.0) -> float:
@@ -223,7 +234,7 @@ def clinical_features(meta_row: pd.Series) -> Dict[str, float]:
         "clinical_sex_male": _safe_float(sex_male),
     }
 
-    for field in ("location", "hospital", "source", "side"):
+    for field in SAFE_CLINICAL_CATEGORICAL_FIELDS:
         raw_value = meta_row.get(field, "Unknown")
         if pd.isna(raw_value):
             value = "Unknown"
@@ -242,7 +253,7 @@ def extract_case_row(case_dir: Path, meta_row: pd.Series) -> Dict[str, float]:
 
     row = {
         "case_name": case_dir.name,
-        "dataset": str(meta_row.get("dataset", case_dir.name)),
+        "patient_group": _stable_group_id(meta_row, case_dir.name),
         "vesselFileID": str(meta_row.get("vesselFileID", case_dir.name)),
         "cutToShow": str(meta_row.get("cutToShow", "cut1")),
         "target": 1 if str(meta_row.get("status", "")).strip().lower() == "ruptured" else 0,
@@ -277,9 +288,8 @@ def discover_case_rows(
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    numeric_cols = [
-        c for c in df.columns if c not in {"case_name", "dataset", "vesselFileID", "cutToShow"}
-    ]
+    df.insert(0, "case_id", [f"case_{i + 1:04d}" for i in range(len(df))])
+    numeric_cols = [c for c in df.columns if c not in {"case_id", *INTERNAL_METADATA_COLUMNS}]
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
     return df
 
@@ -294,14 +304,51 @@ def _modality_for_feature(feature_name: str) -> str:
     return "other"
 
 
+def _stable_group_id(meta_row: pd.Series, fallback: str) -> str:
+    for field in ("patientID", "vesselFileID", "dataset"):
+        value = meta_row.get(field, "")
+        if pd.notna(value):
+            text = str(value).strip()
+            if text and text.lower() not in {"nan", "none", "null"}:
+                return text
+    return fallback
+
+
+def _is_leakage_feature(feature_name: str) -> bool:
+    lowered = feature_name.lower()
+    return any(lowered.startswith(prefix) for prefix in LEAKAGE_PREFIXES)
+
+
+def _feature_columns(features: pd.DataFrame, target_col: str) -> List[str]:
+    excluded = set(NON_FEATURE_COLUMNS)
+    excluded.add(target_col)
+    return [c for c in features.columns if c not in excluded and not _is_leakage_feature(c)]
+
+
+def _public_feature_table(features: pd.DataFrame) -> pd.DataFrame:
+    drop_cols = [c for c in INTERNAL_METADATA_COLUMNS if c in features.columns]
+    return features.drop(columns=drop_cols, errors="ignore")
+
+
+def _make_cv_splits(features: pd.DataFrame, y: np.ndarray, seed: int, n_splits: int):
+    groups = features.get("patient_group")
+    if groups is not None and groups.nunique(dropna=True) >= n_splits:
+        try:
+            splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            return list(
+                splitter.split(features, y, groups.astype(str))
+            ), "StratifiedGroupKFold(patient_group)"
+        except ValueError:
+            pass
+
+    splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    return list(splitter.split(features, y)), "StratifiedKFold"
+
+
 def compute_feature_importance(
     features: pd.DataFrame, target_col: str = "target", seed: int = 42, n_splits: int = 5
 ):
-    feature_cols = [
-        c
-        for c in features.columns
-        if c not in {target_col, "case_name", "dataset", "vesselFileID", "cutToShow"}
-    ]
+    feature_cols = _feature_columns(features, target_col)
     X = features[feature_cols].copy()
     y = features[target_col].astype(int).to_numpy()
 
@@ -314,12 +361,12 @@ def compute_feature_importance(
         raise ValueError("Need at least two samples per class for importance scoring")
     n_splits = max(2, min(int(n_splits), min_class))
 
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    cv_splits, split_strategy = _make_cv_splits(features, y, seed, n_splits)
     coef_rows = []
     perm_rows = []
     fold_rows = []
 
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y), start=1):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv_splits, start=1):
         X_train = X.iloc[train_idx]
         y_train = y[train_idx]
         X_val = X.iloc[val_idx]
@@ -338,7 +385,14 @@ def compute_feature_importance(
         fold_auc = roc_auc_score(y_val, val_probs) if len(np.unique(y_val)) > 1 else 0.5
         fold_ap = average_precision_score(y_val, val_probs) if len(np.unique(y_val)) > 1 else 0.0
         fold_rows.append(
-            {"fold": fold_idx, "auc": fold_auc, "pr_auc": fold_ap, "n_val": len(val_idx)}
+            {
+                "fold": fold_idx,
+                "auc": fold_auc,
+                "pr_auc": fold_ap,
+                "n_train": len(train_idx),
+                "n_val": len(val_idx),
+                "split_strategy": split_strategy,
+            }
         )
 
         clf = pipeline.named_steps["clf"]
@@ -413,7 +467,8 @@ def build_condensed_tables(
         raise RuntimeError(f"No cases with hemodynamics_aggregate.csv found in {data_dir}")
 
     feature_path = output_dir / "condensed_case_features.csv"
-    features.to_csv(feature_path, index=False)
+    public_features = _public_feature_table(features)
+    public_features.to_csv(feature_path, index=False)
 
     importance, modality_summary, fold_metrics = compute_feature_importance(features, seed=seed)
     importance_path = output_dir / "feature_importance_summary.csv"
@@ -425,10 +480,10 @@ def build_condensed_tables(
     fold_metrics.to_csv(fold_path, index=False)
 
     selected = importance.head(max(1, min(int(top_k), len(importance))))["feature"].tolist()
-    condensed_cols = ["case_name", "dataset", "vesselFileID", "cutToShow", "target"] + selected
-    condensed_cols = [c for c in condensed_cols if c in features.columns]
+    condensed_cols = [*PUBLIC_METADATA_COLUMNS, *selected]
+    condensed_cols = [c for c in condensed_cols if c in public_features.columns]
     top_path = output_dir / f"condensed_case_features_top{len(selected)}.csv"
-    features[condensed_cols].to_csv(top_path, index=False)
+    public_features[condensed_cols].to_csv(top_path, index=False)
 
     return {
         "feature_table": feature_path,

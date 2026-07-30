@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 import argparse
 import csv
 import logging
@@ -20,57 +20,59 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Configuration
 
-VTP_DIR = os.environ.get("v12_VTP_DIR", "vtp_data")
-OUTPUT_DIR = os.environ.get("v12_OUTPUT_DIR", "predictions/full_accuracy")
+VTP_DIR = os.environ.get("v13_VTP_DIR", "vtp_data")
+OUTPUT_DIR = os.environ.get("v13_OUTPUT_DIR", "predictions/full_accuracy")
 TRAINING_LOG_SUBDIR = "training_logs"
 
-STEADY_EPOCHS = int(os.environ.get("v12_STEADY_EPOCHS", 1000))
-UNSTEADY_EPOCHS = int(os.environ.get("v12_UNSTEADY_EPOCHS", 2000))
-LBFGS_ITERS = int(os.environ.get("v12_LBFGS_ITERS", 50))
-NT = int(os.environ.get("v12_NT", 10))
-N_INTERIOR = int(os.environ.get("v12_N_INTERIOR", 4096))
-N_WALL = int(os.environ.get("v12_N_WALL", 2048))
-N_INLET = int(os.environ.get("v12_N_INLET", 2048))
-N_OUTLET = int(os.environ.get("v12_N_OUTLET", N_INLET))
-COLLOC_BATCH = int(os.environ.get("v12_COLLOC_BATCH", 2048))
+STEADY_EPOCHS = int(os.environ.get("v13_STEADY_EPOCHS", 1000))
+UNSTEADY_EPOCHS = int(os.environ.get("v13_UNSTEADY_EPOCHS", 2000))
+LBFGS_ITERS = int(os.environ.get("v13_LBFGS_ITERS", 50))
+NT = int(os.environ.get("v13_NT", 10))
+N_INTERIOR = int(os.environ.get("v13_N_INTERIOR", 4096))
+N_WALL = int(os.environ.get("v13_N_WALL", 2048))
+N_INLET = int(os.environ.get("v13_N_INLET", 2048))
+N_OUTLET = int(os.environ.get("v13_N_OUTLET", N_INLET))
+COLLOC_BATCH = int(os.environ.get("v13_COLLOC_BATCH", 2048))
 T_END = 1.0
 MU = 0.0035
 RHO = 1060.0
 NU = MU / RHO
 
-FLOW_RATE = float(os.environ.get("v12_FLOW_RATE", 0.2))
-HIDDEN_DIM = int(os.environ.get("v12_HIDDEN_DIM", 128))
-N_LAYERS = int(os.environ.get("v12_N_LAYERS", 5))
-FOURIER_MODES = int(os.environ.get("v12_FOURIER_MODES", 16))
-FOURIER_SIGMA = float(os.environ.get("v12_FOURIER_SIGMA", 2.0))
+FLOW_RATE = float(os.environ.get("v13_FLOW_RATE", 0.2))
+HIDDEN_DIM = int(os.environ.get("v13_HIDDEN_DIM", 128))
+N_LAYERS = int(os.environ.get("v13_N_LAYERS", 5))
+FOURIER_MODES = int(os.environ.get("v13_FOURIER_MODES", 16))
+FOURIER_SIGMA = float(os.environ.get("v13_FOURIER_SIGMA", 2.0))
 
-LR = float(os.environ.get("v12_LR", 1e-3))
-WALL_LOSS_WEIGHT = float(os.environ.get("v12_WALL_W", 5.0))
-INLET_LOSS_WEIGHT = float(os.environ.get("v12_INLET_W", 5.0))
-OUTLET_LOSS_WEIGHT = float(os.environ.get("v12_OUTLET_W", 2.0))
-PHYSICS_LOSS_WEIGHT = float(os.environ.get("v12_PHYS_W", 1.0))
-PERIODIC_LOSS_WEIGHT = float(os.environ.get("v12_PERIODIC_W", 1.0))
-GRAD_CLIP = float(os.environ.get("v12_GRAD_CLIP", 1.0))
-LOG_EVERY = int(os.environ.get("v12_LOG_EVERY", 25))
-LOSS_REF_EMA = float(os.environ.get("v12_LOSS_REF_EMA", 0.98))
-SCHEDULER_KIND = os.environ.get("v12_SCHEDULER", "warm_restarts").strip().lower()
-SCHEDULER_ETA_MIN = float(os.environ.get("v12_ETA_MIN", 1e-6))
-SCHEDULER_RESTART_T0 = int(os.environ.get("v12_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
-EARLY_STOP_PATIENCE = int(os.environ.get("v12_EARLY_STOP_PATIENCE", 200))
-SAVE_CHECKPOINT_EVERY = int(os.environ.get("v12_SAVE_CHECKPOINT_EVERY", 0))
-FIXED_COLLOCATION = os.environ.get("v12_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
+LR = float(os.environ.get("v13_LR", 1e-3))
+WALL_LOSS_WEIGHT = float(os.environ.get("v13_WALL_W", 5.0))
+INLET_LOSS_WEIGHT = float(os.environ.get("v13_INLET_W", 5.0))
+OUTLET_LOSS_WEIGHT = float(os.environ.get("v13_OUTLET_W", 2.0))
+PHYSICS_LOSS_WEIGHT = float(os.environ.get("v13_PHYS_W", 1.0))
+PERIODIC_LOSS_WEIGHT = float(os.environ.get("v13_PERIODIC_W", 1.0))
+LOSS_WEIGHT_MODE = os.environ.get("v13_LOSS_WEIGHT_MODE", "fixed").strip().lower()
+LOSS_WEIGHT_LR = float(os.environ.get("v13_LOSS_WEIGHT_LR", 1e-3))
+GRAD_CLIP = float(os.environ.get("v13_GRAD_CLIP", 1.0))
+LOG_EVERY = int(os.environ.get("v13_LOG_EVERY", 25))
+LOSS_REF_EMA = float(os.environ.get("v13_LOSS_REF_EMA", 0.98))
+SCHEDULER_KIND = os.environ.get("v13_SCHEDULER", "warm_restarts").strip().lower()
+SCHEDULER_ETA_MIN = float(os.environ.get("v13_ETA_MIN", 1e-6))
+SCHEDULER_RESTART_T0 = int(os.environ.get("v13_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
+EARLY_STOP_PATIENCE = int(os.environ.get("v13_EARLY_STOP_PATIENCE", 200))
+SAVE_CHECKPOINT_EVERY = int(os.environ.get("v13_SAVE_CHECKPOINT_EVERY", 0))
+FIXED_COLLOCATION = os.environ.get("v13_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
 
-LIMIT = int(os.environ["v12_LIMIT"]) if os.environ.get("v12_LIMIT") else None
+LIMIT = int(os.environ["v13_LIMIT"]) if os.environ.get("v13_LIMIT") else None
 SEED = 42
-UNSTEADY = os.environ.get("v12_UNSTEADY", "1").lower() in {"1", "true", "yes"}
-REQUIRE_GPU = os.environ.get("v12_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
-CUDA_INDEX = int(os.environ.get("v12_CUDA_DEVICE", 0))
+UNSTEADY = os.environ.get("v13_UNSTEADY", "1").lower() in {"1", "true", "yes"}
+REQUIRE_GPU = os.environ.get("v13_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
+CUDA_INDEX = int(os.environ.get("v13_CUDA_DEVICE", 0))
 
 
 def _resolve_device():
     if not torch.cuda.is_available():
         if REQUIRE_GPU:
-            raise RuntimeError("CUDA required. Set v12_REQUIRE_GPU=0 to allow CPU.")
+            raise RuntimeError("CUDA required. Set v13_REQUIRE_GPU=0 to allow CPU.")
         return torch.device("cpu")
     idx = max(0, min(CUDA_INDEX, torch.cuda.device_count() - 1))
     torch.cuda.set_device(idx)
@@ -89,7 +91,7 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 TRAINING_LOG_DIR = Path(OUTPUT_DIR) / TRAINING_LOG_SUBDIR
 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logger = logging.getLogger("v12PINNPipeline")
+logger = logging.getLogger("v13PINNPipeline")
 logger.setLevel(logging.INFO)
 logger.handlers.clear()
 _fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -99,6 +101,28 @@ logger.addHandler(_ch)
 _fh = logging.FileHandler(Path(OUTPUT_DIR) / "pinn_pipeline.log")
 _fh.setFormatter(_fmt)
 logger.addHandler(_fh)
+
+
+class UncertaintyConstraintWeights(nn.Module):
+    """Learn positive PINN constraint weights using homoscedastic uncertainty.
+
+    Initial effective weights equal the configured fixed weights. The objective
+    sum(exp(-s_i) * L_i + s_i) prevents the trivial all-zero-weight solution.
+    """
+
+    def __init__(self, names, initial_weights):
+        super().__init__()
+        self.names = list(names)
+        initial = torch.as_tensor(initial_weights, dtype=torch.float32).clamp_min(1e-6)
+        self.log_variances = nn.Parameter(-torch.log(initial))
+
+    def forward(self, losses):
+        stacked = torch.stack(list(losses))
+        precision = torch.exp(-self.log_variances)
+        return torch.sum(precision * stacked + self.log_variances)
+
+    def effective_weights(self):
+        return torch.exp(-self.log_variances)
 
 
 # Geometry helpers
@@ -385,7 +409,27 @@ def train_pinn(
 ):
     """Train PINN with adaptive loss weights + optional L-BFGS polish (steady)."""
     model = PINNNet().to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    constraint_names = ["physics", "wall", "inlet", "outlet"] + (["periodic"] if unsteady else [])
+    initial_constraint_weights = [
+        PHYSICS_LOSS_WEIGHT,
+        WALL_LOSS_WEIGHT,
+        INLET_LOSS_WEIGHT,
+        OUTLET_LOSS_WEIGHT,
+    ] + ([PERIODIC_LOSS_WEIGHT] if unsteady else [])
+    adaptive_weights = None
+    optimizer_groups = [{"params": model.parameters(), "lr": LR}]
+    if LOSS_WEIGHT_MODE == "uncertainty":
+        adaptive_weights = UncertaintyConstraintWeights(
+            constraint_names, initial_constraint_weights
+        ).to(DEVICE)
+        optimizer_groups.append({"params": adaptive_weights.parameters(), "lr": LOSS_WEIGHT_LR})
+        logger.info(
+            "Using learnable uncertainty-based PINN constraint weights initialized from %s",
+            dict(zip(constraint_names, initial_constraint_weights)),
+        )
+    elif LOSS_WEIGHT_MODE != "fixed":
+        raise ValueError("v13_LOSS_WEIGHT_MODE must be 'fixed' or 'uncertainty'")
+    optimizer = torch.optim.Adam(optimizer_groups)
     if SCHEDULER_KIND == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
@@ -493,17 +537,30 @@ def train_pinn(
             inlet_ref = m * inlet_ref + (1.0 - m) * (float(loss_inlet.detach()) + 1e-12)
             outlet_ref = m * outlet_ref + (1.0 - m) * (float(loss_outlet.detach()) + 1e-12)
             periodic_ref = m * periodic_ref + (1.0 - m) * (float(loss_periodic.detach()) + 1e-12)
-        loss = (
-            PHYSICS_LOSS_WEIGHT * loss_phys / phys_ref
-            + WALL_LOSS_WEIGHT * loss_wall / wall_ref
-            + INLET_LOSS_WEIGHT * loss_inlet / inlet_ref
-            + OUTLET_LOSS_WEIGHT * loss_outlet / outlet_ref
-            + (PERIODIC_LOSS_WEIGHT * loss_periodic / periodic_ref if unsteady else 0.0)
-        )
+        normalized_losses = [
+            loss_phys / phys_ref,
+            loss_wall / wall_ref,
+            loss_inlet / inlet_ref,
+            loss_outlet / outlet_ref,
+        ] + ([loss_periodic / periodic_ref] if unsteady else [])
+        if adaptive_weights is None:
+            loss = sum(
+                weight * component
+                for weight, component in zip(initial_constraint_weights, normalized_losses)
+            )
+            effective_weights = torch.as_tensor(
+                initial_constraint_weights, dtype=torch.float32, device=DEVICE
+            )
+        else:
+            loss = adaptive_weights(normalized_losses)
+            effective_weights = adaptive_weights.effective_weights()
         loss.backward()
         if GRAD_CLIP > 0:
             nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         optimizer.step()
+        if adaptive_weights is not None:
+            with torch.no_grad():
+                adaptive_weights.log_variances.clamp_(-4.0, 4.0)
         if scheduler is not None:
             scheduler.step()
 
@@ -511,11 +568,22 @@ def train_pinn(
         if lv < best_loss:
             best_loss = lv
             best_epoch = epoch + 1
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {
+                "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+                "adaptive_weights": (
+                    {k: v.detach().cpu().clone() for k, v in adaptive_weights.state_dict().items()}
+                    if adaptive_weights is not None
+                    else None
+                ),
+            }
             try:
                 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
                 best_path = Path(TRAINING_LOG_DIR) / f"{case_name}_best.pt"
-                torch.save(model.state_dict(), best_path)
+                # Preserve the historical fixed-mode checkpoint format. The
+                # adaptive mode additionally stores its learned weight state.
+                torch.save(
+                    best_state if adaptive_weights is not None else best_state["model"], best_path
+                )
                 logger.info("Saved best checkpoint: %s (epoch %d)", best_path, epoch + 1)
             except Exception as exc:
                 logger.warning("Failed to save best checkpoint: %s", exc)
@@ -547,6 +615,13 @@ def train_pinn(
                 "periodic_loss": float(loss_periodic.item()),
                 "lr": float(optimizer.param_groups[0]["lr"]),
                 "epoch_time_sec": float(time.time() - t_start),
+                "loss_weight_mode": LOSS_WEIGHT_MODE,
+                **{
+                    f"{name}_effective_weight": float(value)
+                    for name, value in zip(
+                        constraint_names, effective_weights.detach().cpu().tolist()
+                    )
+                },
             }
         )
 
@@ -565,7 +640,11 @@ def train_pinn(
             pbar.set_postfix({"total": f"{lv:.3e}"})
 
     if best_state is not None:
-        model.load_state_dict({k: v.to(DEVICE) for k, v in best_state.items()})
+        model.load_state_dict({k: v.to(DEVICE) for k, v in best_state["model"].items()})
+        if adaptive_weights is not None and best_state["adaptive_weights"] is not None:
+            adaptive_weights.load_state_dict(
+                {k: v.to(DEVICE) for k, v in best_state["adaptive_weights"].items()}
+            )
 
     if not unsteady and LBFGS_ITERS > 0:
         logger.info("[%s] L-BFGS polish for %d iterations", case_name, LBFGS_ITERS)
@@ -611,11 +690,18 @@ def train_pinn(
                 )
             else:
                 loss_o = torch.zeros(1, device=DEVICE)
-            loss_l = (
-                PHYSICS_LOSS_WEIGHT * loss_p / phys_ref
-                + WALL_LOSS_WEIGHT * loss_w / wall_ref
-                + INLET_LOSS_WEIGHT * loss_i / inlet_ref
-                + OUTLET_LOSS_WEIGHT * loss_o / outlet_ref
+            normalized_lbfgs = [
+                loss_p / phys_ref,
+                loss_w / wall_ref,
+                loss_i / inlet_ref,
+                loss_o / outlet_ref,
+            ]
+            if adaptive_weights is None:
+                lbfgs_weights = initial_constraint_weights[:4]
+            else:
+                lbfgs_weights = adaptive_weights.effective_weights().detach().cpu().tolist()[:4]
+            loss_l = sum(
+                weight * component for weight, component in zip(lbfgs_weights, normalized_lbfgs)
             )
             loss_l.backward()
             return loss_l
@@ -636,7 +722,19 @@ def train_pinn(
         "avg_epoch_time_sec": float(np.mean([h["epoch_time_sec"] for h in history]))
         if history
         else 0.0,
+        "loss_weight_mode": LOSS_WEIGHT_MODE,
     }
+    final_weights = (
+        adaptive_weights.effective_weights().detach().cpu().tolist()
+        if adaptive_weights is not None
+        else initial_constraint_weights
+    )
+    stats.update(
+        {
+            f"final_{name}_weight": float(value)
+            for name, value in zip(constraint_names, final_weights)
+        }
+    )
     return model, history, stats
 
 
@@ -924,7 +1022,7 @@ def process_case(vtp_file: Path, output_dir: Path, unsteady: bool):
 def main():
     global VTP_DIR, OUTPUT_DIR, STEADY_EPOCHS, UNSTEADY_EPOCHS, UNSTEADY, LIMIT
 
-    parser = argparse.ArgumentParser(description="Train PINN flow simulation pipeline (v12)")
+    parser = argparse.ArgumentParser(description="Train PINN flow simulation pipeline (v13)")
     parser.add_argument(
         "--vtp-dir", default=VTP_DIR, help="Directory containing VTP geometry files"
     )

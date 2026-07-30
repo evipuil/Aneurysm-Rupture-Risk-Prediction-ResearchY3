@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 from __future__ import annotations
 
 import math
@@ -8,15 +8,20 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import FancyBboxPatch
 
+try:
+    import seaborn as sns
+except ModuleNotFoundError:
+    sns = None
+
+
 ROOT = Path(__file__).resolve().parent
-SUITE_DIR = ROOT / "results_V12_suite"
-CURRENT_FEATURE_DIR = ROOT / "results_v12_feature_extraction"
-BAD_FEATURE_DIR = ROOT / "results_v12_feature_extraction_bad"
-OUT_DIR = ROOT / "results_v12_figure_pack"
+SUITE_DIR = ROOT / "results_V13_suite"
+CURRENT_FEATURE_DIR = ROOT / "results_v13_feature_extraction"
+BAD_FEATURE_DIR = ROOT / "version12" / "results_v12_feature_extraction_bad"
+OUT_DIR = ROOT / "results_v13_figure_pack"
 FIG_DIR = OUT_DIR / "figures"
 
 
@@ -57,7 +62,10 @@ METRIC_LABELS = {
 
 
 def setup_style() -> None:
-    sns.set_theme(style="whitegrid", context="notebook")
+    if sns is not None:
+        sns.set_theme(style="whitegrid", context="notebook")
+    else:
+        plt.style.use("seaborn-v0_8-whitegrid")
     plt.rcParams.update(
         {
             "figure.dpi": 160,
@@ -73,6 +81,87 @@ def setup_style() -> None:
             "axes.facecolor": "white",
         }
     )
+
+
+def plot_heatmap(
+    data: pd.DataFrame,
+    ax: plt.Axes,
+    annot: bool = True,
+    fmt: str = ".2f",
+    cmap: str = "YlGnBu",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    linewidths: float = 0.5,
+    linecolor: str = "white",
+    cbar_kws: dict[str, str] | None = None,
+) -> None:
+    if sns is not None:
+        sns.heatmap(
+            data,
+            ax=ax,
+            annot=annot,
+            fmt=fmt,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            linewidths=linewidths,
+            linecolor=linecolor,
+            cbar_kws=cbar_kws,
+        )
+        return
+
+    values = data.to_numpy(dtype=float)
+    image = ax.imshow(values, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+    ax.set_xticks(np.arange(data.shape[1]))
+    ax.set_xticklabels(data.columns)
+    ax.set_yticks(np.arange(data.shape[0]))
+    ax.set_yticklabels(data.index)
+    ax.set_xticks(np.arange(-0.5, data.shape[1], 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, data.shape[0], 1), minor=True)
+    ax.grid(which="minor", color=linecolor, linestyle="-", linewidth=linewidths)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    if annot:
+        midpoint = (
+            (vmin if vmin is not None else np.nanmin(values))
+            + (vmax if vmax is not None else np.nanmax(values))
+        ) / 2
+        for row in range(data.shape[0]):
+            for col in range(data.shape[1]):
+                value = values[row, col]
+                color = "white" if value > midpoint else "#222222"
+                ax.text(
+                    col, row, format(value, fmt), ha="center", va="center", color=color, fontsize=9
+                )
+    cbar = ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    if cbar_kws and cbar_kws.get("label"):
+        cbar.set_label(cbar_kws["label"])
+
+
+def plot_grouped_bars(
+    data: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    hue_col: str,
+    order: list[str],
+    hue_order: list[str],
+    palette: dict[str, str],
+    ax: plt.Axes,
+) -> None:
+    if sns is not None:
+        sns.barplot(data=data, x=x_col, y=y_col, hue=hue_col, order=order, ax=ax, palette=palette)
+        return
+
+    width = 0.8 / len(hue_order)
+    x = np.arange(len(order))
+    for idx, hue in enumerate(hue_order):
+        heights = []
+        for category in order:
+            match = data[(data[x_col] == category) & (data[hue_col] == hue)]
+            heights.append(float(match[y_col].iloc[0]) if not match.empty else 0.0)
+        offset = (idx - (len(hue_order) - 1) / 2) * width
+        ax.bar(x + offset, heights, width=width, label=hue, color=palette.get(hue, "#666666"))
+    ax.set_xticks(x)
+    ax.set_xticklabels(order)
 
 
 def model_from_folder(path: Path) -> str:
@@ -245,12 +334,12 @@ def plot_key_findings(
 
     cards = [
         (
-            "Best v12 suite AUROC",
+            "Best v13 suite AUROC",
             f"{best_auc['model_label']}\n{best_auc['auc_mean']:.3f} +/- {best_auc['auc_sd']:.3f}",
             "#2F6C9F",
         ),
         (
-            "Best v12 suite AUPRC",
+            "Best v13 suite AUPRC",
             f"{best_pr['model_label']}\n{best_pr['pr_auc_mean']:.3f} +/- {best_pr['pr_auc_sd']:.3f}",
             "#7A4EA3",
         ),
@@ -268,7 +357,7 @@ def plot_key_findings(
 
     fig, ax = plt.subplots(figsize=(13, 7.2))
     ax.axis("off")
-    fig.suptitle("v12 Results Summary", fontsize=24, fontweight="bold", y=0.96)
+    fig.suptitle("v13 Results Summary", fontsize=24, fontweight="bold", y=0.96)
     fig.text(
         0.5,
         0.89,
@@ -313,7 +402,7 @@ def plot_key_findings(
         )
 
     foot = (
-        f"v12 suite: {int(model_summary['folds'].max())}-fold summaries from results_V12_suite; "
+        f"v13 suite: {int(model_summary['folds'].max())}-fold summaries from results_V13_suite; "
         f"current feature extraction uses mean validation n={current_cv['n_val_mean']:.0f} per fold; "
         f"historical bad run uses mean validation n={bad_cv['n_val_mean']:.0f} per fold."
     )
@@ -357,12 +446,12 @@ def plot_metric_heatmap(summary: pd.DataFrame, pdf: PdfPages) -> Path:
     heat = summary.set_index("model_label")[[f"{m}_mean" for m in metrics]].copy()
     heat.columns = [METRIC_LABELS[m] for m in metrics]
     fig, ax = plt.subplots(figsize=(11.5, 6.4))
-    sns.heatmap(
+    plot_heatmap(
         heat,
         ax=ax,
         annot=True,
         fmt=".2f",
-        cmap=sns.color_palette("crest", as_cmap=True),
+        cmap="YlGnBu",
         vmin=0.0,
         vmax=1.0,
         linewidths=0.5,
@@ -385,7 +474,7 @@ def plot_fold_stability(folds: pd.DataFrame, summary: pd.DataFrame, pdf: PdfPage
         (axes[0], auc, "AUROC by fold", "YlGnBu"),
         (axes[1], pr, "AUPRC by fold", "YlOrBr"),
     ]:
-        sns.heatmap(
+        plot_heatmap(
             table,
             ax=ax,
             annot=True,
@@ -472,12 +561,13 @@ def plot_modality_importance(
         (axes[0], "importance_score", "Total composite importance"),
         (axes[1], "importance_per_feature", "Composite importance per feature"),
     ]:
-        sns.barplot(
+        plot_grouped_bars(
             data=modalities,
-            x="modality",
-            y=metric,
-            hue="run_short",
+            x_col="modality",
+            y_col=metric,
+            hue_col="run_short",
             order=order,
+            hue_order=["Current", "Bad"],
             ax=ax,
             palette={"Current": "#2F6C9F", "Bad": "#C26D3A"},
         )
@@ -597,7 +687,7 @@ def plot_case_feature_effects(current: dict[str, pd.DataFrame], pdf: PdfPages) -
 
     feature_info = current["feature_importance_summary.csv"].copy()
     modality_map = dict(zip(feature_info["feature"], feature_info["modality"]))
-    ignore = {"case_name", "dataset", "vesselFileID", "cutToShow", "target", "run"}
+    ignore = {"case_id", "case_name", "dataset", "vesselFileID", "cutToShow", "target", "run"}
     feature_cols = [c for c in case_df.columns if c not in ignore]
     rows = []
     for feature in feature_cols:
@@ -684,7 +774,7 @@ def write_captions(
     captions = [
         (
             "Figure 1. Key findings graphic.",
-            "The v12 suite is summarized with the strongest cross-validated model, the strongest AUPRC model, the current-vs-historical feature-extraction comparison, and the dominant current feature/modality signals. "
+            "The v13 suite is summarized with the strongest cross-validated model, the strongest AUPRC model, the current-vs-historical feature-extraction comparison, and the dominant current feature/modality signals. "
             f"The best AUROC was {best_auc['model_label']} ({best_auc['auc_mean']:.3f} +/- {best_auc['auc_sd']:.3f}); the best AUPRC was {best_pr['model_label']} ({best_pr['pr_auc_mean']:.3f} +/- {best_pr['pr_auc_sd']:.3f}).",
         ),
         (
@@ -694,7 +784,7 @@ def write_captions(
         ),
         (
             "Figure 3. Mean classification metric heatmap.",
-            "Rows compare v12 model families and columns summarize mean fold metrics. The heatmap makes the tradeoff visible: top AUROC models keep broadly similar accuracy, but differ in precision-recall behavior and specificity.",
+            "Rows compare v13 model families and columns summarize mean fold metrics. The heatmap makes the tradeoff visible: top AUROC models keep broadly similar accuracy, but differ in precision-recall behavior and specificity.",
         ),
         (
             "Figure 4. Fold-level AUROC and AUPRC stability.",
@@ -725,13 +815,13 @@ def write_captions(
     ]
 
     lines = [
-        "# v12 Results Figure Pack",
+        "# v13 Results Figure Pack",
         "",
         "## Source data",
         "",
         f"- Current feature extraction: `{CURRENT_FEATURE_DIR.relative_to(ROOT).as_posix()}`",
         f"- Historical bad feature extraction: `{BAD_FEATURE_DIR.relative_to(ROOT).as_posix()}`",
-        f"- v12 model suite: `{SUITE_DIR.relative_to(ROOT).as_posix()}`",
+        f"- v13 model suite: `{SUITE_DIR.relative_to(ROOT).as_posix()}`",
         "",
         "## Main quantitative summary",
         "",
@@ -783,7 +873,7 @@ def main() -> None:
     model_summary.to_csv(OUT_DIR / "suite_model_summary_raw.csv", index=False)
 
     figure_paths: list[Path] = []
-    with PdfPages(OUT_DIR / "v12_results_figure_pack.pdf") as pdf:
+    with PdfPages(OUT_DIR / "v13_results_figure_pack.pdf") as pdf:
         figure_paths.append(plot_key_findings(model_summary, feat_summary, current, bad, pdf))
         figure_paths.append(plot_model_performance(folds, model_summary, pdf))
         figure_paths.append(plot_metric_heatmap(model_summary, pdf))
@@ -797,7 +887,7 @@ def main() -> None:
     write_captions(model_summary, feat_summary, current, bad, figure_paths)
     print(f"Wrote {len(figure_paths)} figures to {FIG_DIR}")
     print(f"Wrote captions to {OUT_DIR / 'figure_captions.md'}")
-    print(f"Wrote PDF to {OUT_DIR / 'v12_results_figure_pack.pdf'}")
+    print(f"Wrote PDF to {OUT_DIR / 'v13_results_figure_pack.pdf'}")
 
 
 if __name__ == "__main__":

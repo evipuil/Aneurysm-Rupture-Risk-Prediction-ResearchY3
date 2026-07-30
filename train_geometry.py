@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 import argparse
 import sys
 from pathlib import Path
@@ -7,7 +7,6 @@ import torch
 
 from base_trainer import (
     TORCH_AVAILABLE,
-    StratifiedKFold,
     build_case_cache,
     build_epoch_row,
     build_point_loaders,
@@ -18,6 +17,7 @@ from base_trainer import (
     get_optimizer,
     get_scheduler,
     load_checkpoint_weights,
+    make_cv_splits,
     set_seed,
     write_epoch_log,
 )
@@ -37,7 +37,7 @@ SEED = 42
 CV_SEED = 42
 METADATA_PATH = "metadata.csv"
 DATA_DIR = "predictions/pinn_corrected"
-OUTPUT_ROOT = Path("results_V12_suite")
+OUTPUT_ROOT = Path("results_V13_suite")
 N_FOLDS = 5
 BATCH_SIZE = 6
 EPOCHS = 220
@@ -56,7 +56,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = "pointnet2"):
     """Train geometry-only model with stratified k-fold CV."""
-    print(f"Training GEOMETRY model with StratifiedKFold at {output_dir}")
+    print(f"Training GEOMETRY model at {output_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(SEED)
@@ -64,10 +64,11 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
     categories = compute_clinical_categories(df)
     cache = build_case_cache(df)
 
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=CV_SEED)
+    cv_splits, split_strategy = make_cv_splits(df, N_FOLDS, CV_SEED)
+    print(f"  CV split: {split_strategy}")
     fold_metrics = []
 
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(df, df["target"])):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
         print(f"\n=== FOLD {fold_idx + 1}/{N_FOLDS} ===")
 
         train_df = df.iloc[train_idx].reset_index(drop=True)
@@ -170,6 +171,7 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
         # Evaluate best model on val set
         classifier.load_state_dict(load_checkpoint_weights(best_model_path, DEVICE))
         val_metrics = evaluate_tensor_model(classifier, val_loader, criterion, DEVICE, USE_AMP)
+        val_metrics["split_strategy"] = split_strategy
         fold_metrics.append(val_metrics)
         print(f"  Best fold AUC: {best_val_auc:.4f}")
 
@@ -180,7 +182,7 @@ def run_geometry_experiment(df: pd.DataFrame, output_dir: Path, backbone: str = 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train geometry-only rupture model (v12 modular)")
+    parser = argparse.ArgumentParser(description="Train geometry-only rupture model (v13 modular)")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--backbone", choices=["pointnet2", "pointnext"], default="pointnet2")
     parser.add_argument("--metadata-path", default=METADATA_PATH)

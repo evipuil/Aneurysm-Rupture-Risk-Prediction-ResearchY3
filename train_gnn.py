@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 import argparse
 import sys
 from pathlib import Path
@@ -10,11 +10,11 @@ import torch.nn.functional as F
 
 from base_trainer import (
     TORCH_AVAILABLE,
-    StratifiedKFold,
     build_epoch_row,
     discover_cases,
     load_checkpoint_weights,
     load_graph_case,
+    make_cv_splits,
     set_seed,
     write_epoch_log,
 )
@@ -33,7 +33,7 @@ except ImportError:
 
 SEED, CV_SEED = 42, 42
 METADATA_PATH, DATA_DIR = "metadata.csv", "predictions/pinn_corrected"
-OUTPUT_ROOT = Path("results_V12_suite")
+OUTPUT_ROOT = Path("results_V13_suite")
 N_FOLDS, BATCH_SIZE, EPOCHS, LR, WEIGHT_DECAY = 5, 6, 220, 3e-4, 2e-4
 EARLY_STOP_PATIENCE, DROPOUT, EMBED_DIM = 35, 0.30, 256
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -48,10 +48,11 @@ def run_gnn_experiment(df: pd.DataFrame, output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(SEED)
 
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=CV_SEED)
+    cv_splits, split_strategy = make_cv_splits(df, N_FOLDS, CV_SEED)
+    print(f"  CV split: {split_strategy}")
     fold_metrics = []
 
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(df, df["target"])):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
         print(f"\n=== FOLD {fold_idx + 1}/{N_FOLDS} ===")
 
         train_df = df.iloc[train_idx].reset_index(drop=True)
@@ -154,6 +155,7 @@ def run_gnn_experiment(df: pd.DataFrame, output_dir: Path):
             from base_trainer import classification_report_dict
 
             val_metrics = classification_report_dict(val_labels, val_preds)
+        val_metrics["split_strategy"] = split_strategy
 
         fold_metrics.append(val_metrics)
 
@@ -162,17 +164,19 @@ def run_gnn_experiment(df: pd.DataFrame, output_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train GNN rupture model (v12 modular)")
+    parser = argparse.ArgumentParser(description="Train GNN rupture model (v13 modular)")
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--metadata-path", default=METADATA_PATH)
+    parser.add_argument("--data-dir", default=DATA_DIR)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
     set_seed(args.seed)
     output_dir = Path(args.output_dir) if args.output_dir else OUTPUT_ROOT / f"gnn_seed_{args.seed}"
 
-    df = discover_cases(DATA_DIR, METADATA_PATH)
+    df = discover_cases(args.data_dir, args.metadata_path)
     if len(df) == 0:
-        print("ERROR: No samples found", file=sys.stderr)
+        print(f"ERROR: No samples found under {args.data_dir}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Training GNN model (seed={args.seed})")

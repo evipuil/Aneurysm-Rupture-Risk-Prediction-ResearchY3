@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 import argparse
 import sys
 from pathlib import Path
@@ -10,7 +10,6 @@ import torch.nn as nn
 from base_trainer import (
     FLOW_CHANNELS,
     TORCH_AVAILABLE,
-    StratifiedKFold,
     build_case_cache,
     build_epoch_row,
     build_point_loaders,
@@ -21,6 +20,7 @@ from base_trainer import (
     get_optimizer,
     get_scheduler,
     load_checkpoint_weights,
+    make_cv_splits,
     set_seed,
     write_epoch_log,
 )
@@ -32,7 +32,7 @@ if not TORCH_AVAILABLE:
 
 SEED, CV_SEED = 42, 42
 METADATA_PATH, DATA_DIR = "metadata.csv", "predictions/pinn_corrected"
-OUTPUT_ROOT = Path("results_V12_suite")
+OUTPUT_ROOT = Path("results_V13_suite")
 N_FOLDS, BATCH_SIZE, EPOCHS, LR, WEIGHT_DECAY = 5, 6, 220, 3e-4, 2e-4
 TARGET_N = 4096
 EARLY_STOP_PATIENCE, USE_AMP, LABEL_SMOOTHING = 35, True, 0.05
@@ -48,10 +48,11 @@ def run_geometry_flow_clinical_experiment(df: pd.DataFrame, output_dir: Path):
 
     categories = compute_clinical_categories(df)
     cache = build_case_cache(df)
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=CV_SEED)
+    cv_splits, split_strategy = make_cv_splits(df, N_FOLDS, CV_SEED)
+    print(f"  CV split: {split_strategy}")
     fold_metrics = []
 
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(df, df["target"])):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
         print(f"\n=== FOLD {fold_idx + 1}/{N_FOLDS} ===")
 
         train_df = df.iloc[train_idx].reset_index(drop=True)
@@ -156,6 +157,7 @@ def run_geometry_flow_clinical_experiment(df: pd.DataFrame, output_dir: Path):
 
         classifier.load_state_dict(load_checkpoint_weights(best_model_path, DEVICE))
         val_metrics = evaluate_tensor_model(classifier, val_loader, criterion, DEVICE, USE_AMP)
+        val_metrics["split_strategy"] = split_strategy
         fold_metrics.append(val_metrics)
 
     pd.DataFrame(fold_metrics).to_csv(output_dir / "fold_summary.csv", index=False)
@@ -163,8 +165,10 @@ def run_geometry_flow_clinical_experiment(df: pd.DataFrame, output_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train full fusion model (v12 modular)")
+    parser = argparse.ArgumentParser(description="Train full fusion model (v13 modular)")
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--metadata-path", default=METADATA_PATH)
+    parser.add_argument("--data-dir", default=DATA_DIR)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
@@ -175,9 +179,9 @@ def main():
         else OUTPUT_ROOT / f"geometry_flow_clinical_seed_{args.seed}"
     )
 
-    df = discover_cases(DATA_DIR, METADATA_PATH)
+    df = discover_cases(args.data_dir, args.metadata_path)
     if len(df) == 0:
-        print("ERROR: No samples found", file=sys.stderr)
+        print(f"ERROR: No samples found under {args.data_dir}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Training GEOMETRY+FLOW+CLINICAL model (seed={args.seed})")

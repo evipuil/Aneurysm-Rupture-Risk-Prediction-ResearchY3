@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 import argparse
 import csv
 import logging
@@ -20,61 +20,61 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Configuration
 
-VTP_DIR = os.environ.get("v12_VTP_DIR", "vtp_data")
-OUTPUT_DIR = os.environ.get("v12_OUTPUT_DIR", "predictions/pinn_corrected_carreau")
+VTP_DIR = os.environ.get("v13_VTP_DIR", "vtp_data")
+OUTPUT_DIR = os.environ.get("v13_OUTPUT_DIR", "predictions/pinn_corrected_carreau")
 TRAINING_LOG_SUBDIR = "training_logs"
 
-STEADY_EPOCHS = int(os.environ.get("v12_STEADY_EPOCHS", 400))
-UNSTEADY_EPOCHS = int(os.environ.get("v12_UNSTEADY_EPOCHS", 600))
-LBFGS_ITERS = int(os.environ.get("v12_LBFGS_ITERS", 50))
-NT = int(os.environ.get("v12_NT", 10))
-N_INTERIOR = int(os.environ.get("v12_N_INTERIOR", 4096))
-N_WALL = int(os.environ.get("v12_N_WALL", 2048))
-N_INLET = int(os.environ.get("v12_N_INLET", 2048))
-COLLOC_BATCH = int(os.environ.get("v12_COLLOC_BATCH", 2048))
+STEADY_EPOCHS = int(os.environ.get("v13_STEADY_EPOCHS", 400))
+UNSTEADY_EPOCHS = int(os.environ.get("v13_UNSTEADY_EPOCHS", 600))
+LBFGS_ITERS = int(os.environ.get("v13_LBFGS_ITERS", 50))
+NT = int(os.environ.get("v13_NT", 10))
+N_INTERIOR = int(os.environ.get("v13_N_INTERIOR", 4096))
+N_WALL = int(os.environ.get("v13_N_WALL", 2048))
+N_INLET = int(os.environ.get("v13_N_INLET", 2048))
+COLLOC_BATCH = int(os.environ.get("v13_COLLOC_BATCH", 2048))
 T_END = 1.0
 RHO = 1060.0
 
 # Carreau model parameters for blood
 # μ(γ̇) = μ∞ + (μ₀ - μ∞) * (1 + (λ*γ̇)²)^((n-1)/2)
-MU_ZERO = float(os.environ.get("v12_MU_ZERO", 0.16))  # zero-shear-rate viscosity (Pa·s)
-MU_INF = float(os.environ.get("v12_MU_INF", 0.0035))  # infinite-shear-rate viscosity (Pa·s)
-LAMBDA_CARREAU = float(os.environ.get("v12_LAMBDA", 0.110))  # relaxation time (s)
-N_POWER = float(os.environ.get("v12_N_POWER", 0.8))  # power-law index (n < 1 for shear-thinning)
+MU_ZERO = float(os.environ.get("v13_MU_ZERO", 0.16))  # zero-shear-rate viscosity (Pa·s)
+MU_INF = float(os.environ.get("v13_MU_INF", 0.0035))  # infinite-shear-rate viscosity (Pa·s)
+LAMBDA_CARREAU = float(os.environ.get("v13_LAMBDA", 0.110))  # relaxation time (s)
+N_POWER = float(os.environ.get("v13_N_POWER", 0.8))  # power-law index (n < 1 for shear-thinning)
 NU_INF = MU_INF / RHO
 
-FLOW_RATE = float(os.environ.get("v12_FLOW_RATE", 0.2))
-HIDDEN_DIM = int(os.environ.get("v12_HIDDEN_DIM", 128))
-N_LAYERS = int(os.environ.get("v12_N_LAYERS", 5))
-FOURIER_MODES = int(os.environ.get("v12_FOURIER_MODES", 16))
-FOURIER_SIGMA = float(os.environ.get("v12_FOURIER_SIGMA", 2.0))
+FLOW_RATE = float(os.environ.get("v13_FLOW_RATE", 0.2))
+HIDDEN_DIM = int(os.environ.get("v13_HIDDEN_DIM", 128))
+N_LAYERS = int(os.environ.get("v13_N_LAYERS", 5))
+FOURIER_MODES = int(os.environ.get("v13_FOURIER_MODES", 16))
+FOURIER_SIGMA = float(os.environ.get("v13_FOURIER_SIGMA", 2.0))
 
-LR = float(os.environ.get("v12_LR", 1e-3))
-WALL_LOSS_WEIGHT = float(os.environ.get("v12_WALL_W", 5.0))
-INLET_LOSS_WEIGHT = float(os.environ.get("v12_INLET_W", 5.0))
-PHYSICS_LOSS_WEIGHT = float(os.environ.get("v12_PHYS_W", 1.0))
-CORR_LOSS_WEIGHT = float(os.environ.get("v12_CORR_W", 0.0))
-GRAD_CLIP = float(os.environ.get("v12_GRAD_CLIP", 1.0))
-LOG_EVERY = int(os.environ.get("v12_LOG_EVERY", 25))
-LOSS_REF_EMA = float(os.environ.get("v12_LOSS_REF_EMA", 0.98))
-SCHEDULER_KIND = os.environ.get("v12_SCHEDULER", "warm_restarts").strip().lower()
-SCHEDULER_ETA_MIN = float(os.environ.get("v12_ETA_MIN", 1e-6))
-SCHEDULER_RESTART_T0 = int(os.environ.get("v12_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
-EARLY_STOP_PATIENCE = int(os.environ.get("v12_EARLY_STOP_PATIENCE", 50))
-SAVE_CHECKPOINT_EVERY = int(os.environ.get("v12_SAVE_CHECKPOINT_EVERY", 0))
-FIXED_COLLOCATION = os.environ.get("v12_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
+LR = float(os.environ.get("v13_LR", 1e-3))
+WALL_LOSS_WEIGHT = float(os.environ.get("v13_WALL_W", 5.0))
+INLET_LOSS_WEIGHT = float(os.environ.get("v13_INLET_W", 5.0))
+PHYSICS_LOSS_WEIGHT = float(os.environ.get("v13_PHYS_W", 1.0))
+CORR_LOSS_WEIGHT = float(os.environ.get("v13_CORR_W", 0.0))
+GRAD_CLIP = float(os.environ.get("v13_GRAD_CLIP", 1.0))
+LOG_EVERY = int(os.environ.get("v13_LOG_EVERY", 25))
+LOSS_REF_EMA = float(os.environ.get("v13_LOSS_REF_EMA", 0.98))
+SCHEDULER_KIND = os.environ.get("v13_SCHEDULER", "warm_restarts").strip().lower()
+SCHEDULER_ETA_MIN = float(os.environ.get("v13_ETA_MIN", 1e-6))
+SCHEDULER_RESTART_T0 = int(os.environ.get("v13_RESTART_T0", max(50, UNSTEADY_EPOCHS // 5)))
+EARLY_STOP_PATIENCE = int(os.environ.get("v13_EARLY_STOP_PATIENCE", 50))
+SAVE_CHECKPOINT_EVERY = int(os.environ.get("v13_SAVE_CHECKPOINT_EVERY", 0))
+FIXED_COLLOCATION = os.environ.get("v13_FIXED_COLLOCATION", "0").lower() in {"1", "true", "yes"}
 
-LIMIT = int(os.environ["v12_LIMIT"]) if os.environ.get("v12_LIMIT") else None
+LIMIT = int(os.environ["v13_LIMIT"]) if os.environ.get("v13_LIMIT") else None
 SEED = 42
-UNSTEADY = os.environ.get("v12_UNSTEADY", "1").lower() in {"1", "true", "yes"}
-REQUIRE_GPU = os.environ.get("v12_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
-CUDA_INDEX = int(os.environ.get("v12_CUDA_DEVICE", 0))
+UNSTEADY = os.environ.get("v13_UNSTEADY", "1").lower() in {"1", "true", "yes"}
+REQUIRE_GPU = os.environ.get("v13_REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
+CUDA_INDEX = int(os.environ.get("v13_CUDA_DEVICE", 0))
 
 
 def _resolve_device():
     if not torch.cuda.is_available():
         if REQUIRE_GPU:
-            raise RuntimeError("CUDA required. Set v12_REQUIRE_GPU=0 to allow CPU.")
+            raise RuntimeError("CUDA required. Set v13_REQUIRE_GPU=0 to allow CPU.")
         return torch.device("cpu")
     idx = max(0, min(CUDA_INDEX, torch.cuda.device_count() - 1))
     torch.cuda.set_device(idx)
@@ -93,7 +93,7 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 TRAINING_LOG_DIR = Path(OUTPUT_DIR) / TRAINING_LOG_SUBDIR
 TRAINING_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logger = logging.getLogger("v12PINNPipeline")
+logger = logging.getLogger("v13PINNPipeline")
 logger.setLevel(logging.INFO)
 logger.handlers.clear()
 _fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -863,7 +863,7 @@ def main():
     global VTP_DIR, OUTPUT_DIR, STEADY_EPOCHS, UNSTEADY_EPOCHS, UNSTEADY, LIMIT
 
     parser = argparse.ArgumentParser(
-        description="Train PINN flow simulation pipeline with Carreau model (v12)"
+        description="Train PINN flow simulation pipeline with Carreau model (v13)"
     )
     parser.add_argument(
         "--vtp-dir", default=VTP_DIR, help="Directory containing VTP geometry files"

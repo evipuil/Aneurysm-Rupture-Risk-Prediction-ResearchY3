@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 from __future__ import annotations
 
 import csv
@@ -52,6 +52,9 @@ try:
 except Exception:
     HAS_PYG = False
 
+SAFE_CLINICAL_CATEGORICAL_FIELDS = ("location", "side")
+GROUP_COLUMN_CANDIDATES = ("patientID", "vesselFileID", "dataset")
+
 try:
     from sklearn.metrics import (
         accuracy_score,
@@ -62,7 +65,7 @@ try:
         roc_auc_score,
         roc_curve,
     )
-    from sklearn.model_selection import StratifiedKFold
+    from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 except Exception:
 
     def roc_curve(labels, probs):
@@ -106,6 +109,9 @@ except Exception:
 
     def StratifiedKFold(*args, **kwargs):
         raise RuntimeError("StratifiedKFold is unavailable in the local fallback environment")
+
+    def StratifiedGroupKFold(*args, **kwargs):
+        raise RuntimeError("StratifiedGroupKFold is unavailable in the local fallback environment")
 
 
 # Metrics & Utilities
@@ -152,11 +158,24 @@ def select_accuracy_threshold(labels, probs):
     return best_threshold
 
 
-def classification_report_dict(labels, probs, threshold=None):
+def select_youden_threshold(labels, probs):
+    labels = np.asarray(labels).astype(int)
+    probs = np.asarray(probs, dtype=np.float32)
+    if len(labels) == 0 or len(np.unique(labels)) < 2:
+        return 0.5
+    fpr, tpr, thresholds = roc_curve(labels, probs)
+    finite = np.isfinite(thresholds)
+    if not np.any(finite):
+        return 0.5
+    scores = tpr[finite] - fpr[finite]
+    return float(np.clip(thresholds[finite][int(np.argmax(scores))], 1e-6, 1.0 - 1e-6))
+
+
+def classification_report_dict(labels, probs, threshold=0.5):
     labels = np.asarray(labels).astype(int)
     probs = np.asarray(probs)
     if threshold is None:
-        threshold = select_accuracy_threshold(labels, probs)
+        threshold = 0.5
     preds = (probs > threshold).astype(int)
     auc = safe_auc(labels, probs)
     pr_auc = safe_ap(labels, probs)
@@ -164,12 +183,19 @@ def classification_report_dict(labels, probs, threshold=None):
     precision = precision_score(labels, preds, zero_division=0)
     recall = recall_score(labels, preds, zero_division=0)
     tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
+    specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+    f1 = float(2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
     return {
         "auc": auc,
         "pr_auc": pr_auc,
         "acc": acc,
         "precision": precision,
         "recall": recall,
+        "specificity": specificity,
+        "balanced_acc": 0.5 * (recall + specificity),
+        "f1": f1,
+        "threshold": float(threshold),
+        "youden_threshold": select_youden_threshold(labels, probs),
         "tn": int(tn),
         "fp": int(fp),
         "fn": int(fn),
@@ -224,21 +250,17 @@ def discover_cases(
     df = df.loc[valid_indices].reset_index(drop=True)
     df["filepath"] = filepaths
     df["target"] = (df["status"].astype(str).str.lower() == "ruptured").astype(int)
-    for column in ["age", "sex", "location", "hospital", "source", "side"]:
+    for column in ["age", "sex", *SAFE_CLINICAL_CATEGORICAL_FIELDS, *GROUP_COLUMN_CANDIDATES]:
         if column not in df.columns:
             df[column] = "Unknown"
     df["age"] = pd.to_numeric(df["age"], errors="coerce").fillna(df["age"].median())
     df["sex"] = df["sex"].astype(str).str.lower()
+    df["split_group"] = build_split_groups(df)
     return df
 
 
 def fallback_categories():
-    return {
-        "location": ["Unknown"],
-        "hospital": ["Unknown"],
-        "source": ["Unknown"],
-        "side": ["Unknown"],
-    }
+    return {field: ["Unknown"] for field in SAFE_CLINICAL_CATEGORICAL_FIELDS}
 
 
 def clean_category_value(value) -> str:
@@ -248,6 +270,44 @@ def clean_category_value(value) -> str:
     if not text or text.lower() in {"nan", "none", "null"}:
         return "Unknown"
     return text
+
+
+def build_split_groups(df: pd.DataFrame) -> pd.Series:
+    groups = []
+    for _, row in df.iterrows():
+        group = ""
+        for field in GROUP_COLUMN_CANDIDATES:
+            value = row.get(field, "")
+            if pd.notna(value):
+                text = str(value).strip()
+                if text and text.lower() not in {"nan", "none", "null", "unknown"}:
+                    group = text
+                    break
+        if not group:
+            group = str(row.get("filepath", row.name))
+        groups.append(group)
+    return pd.Series(groups, index=df.index, dtype="string")
+
+
+def make_cv_splits(df: pd.DataFrame, n_splits: int, seed: int, target_col: str = "target"):
+    y = df[target_col].astype(int).to_numpy()
+    counts = np.bincount(y, minlength=2)
+    min_class = int(counts.min()) if len(counts) > 1 else 0
+    effective_splits = max(2, min(int(n_splits), min_class))
+
+    groups = df.get("split_group")
+    if groups is not None and groups.nunique(dropna=True) >= effective_splits:
+        try:
+            splitter = StratifiedGroupKFold(
+                n_splits=effective_splits, shuffle=True, random_state=seed
+            )
+            splits = list(splitter.split(df, y, groups.astype(str)))
+            return splits, "StratifiedGroupKFold(split_group)"
+        except Exception:
+            pass
+
+    splitter = StratifiedKFold(n_splits=effective_splits, shuffle=True, random_state=seed)
+    return list(splitter.split(df, y)), "StratifiedKFold"
 
 
 # Point Cloud Operations
@@ -374,7 +434,7 @@ def summarize_global_features(
 
 def compute_clinical_categories(df: pd.DataFrame):
     categories = {}
-    for field in ["location", "hospital", "source", "side"]:
+    for field in SAFE_CLINICAL_CATEGORICAL_FIELDS:
         if field in df.columns:
             categories[field] = sorted(df[field].map(clean_category_value).unique().tolist())
         else:
@@ -401,7 +461,7 @@ def build_clinical_matrix(
     sexes = sexes.fillna(0.0).values.astype(np.float32)
 
     parts = [ages.reshape(-1, 1), sexes.reshape(-1, 1)]
-    for field in ["location", "hospital", "source", "side"]:
+    for field in SAFE_CLINICAL_CATEGORICAL_FIELDS:
         values = (
             df_slice.get(field, pd.Series(["Unknown"] * len(df_slice)))
             .map(clean_category_value)
@@ -473,6 +533,11 @@ def build_epoch_row(
         "val_acc": float(val_metrics.get("acc", 0.0)),
         "val_precision": float(val_metrics.get("precision", 0.0)),
         "val_recall": float(val_metrics.get("recall", 0.0)),
+        "val_specificity": float(val_metrics.get("specificity", 0.0)),
+        "val_balanced_acc": float(val_metrics.get("balanced_acc", 0.0)),
+        "val_f1": float(val_metrics.get("f1", 0.0)),
+        "val_threshold": float(val_metrics.get("threshold", 0.5)),
+        "val_youden_threshold": float(val_metrics.get("youden_threshold", 0.5)),
         "val_tn": int(val_metrics.get("tn", 0)),
         "val_fp": int(val_metrics.get("fp", 0)),
         "val_fn": int(val_metrics.get("fn", 0)),

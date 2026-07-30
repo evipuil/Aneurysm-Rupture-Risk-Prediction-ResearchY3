@@ -1,4 +1,4 @@
-# Version 12 source snapshot
+# Version 13 source snapshot
 from __future__ import annotations
 
 import argparse
@@ -9,8 +9,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR
 TRAINER_DIR = SCRIPT_DIR
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "results_V12_suite"
-DEFAULT_FEATURE_OUTPUT = PROJECT_ROOT / "results_v12_feature_extraction"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "results_V13_suite"
+DEFAULT_FEATURE_OUTPUT = PROJECT_ROOT / "results_v13_feature_extraction"
 
 
 def run_step(name: str, command: list[str], continue_on_error: bool = False) -> bool:
@@ -29,7 +29,7 @@ def run_step(name: str, command: list[str], continue_on_error: bool = False) -> 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run all v12 non-PINN trainers, then feature extraction"
+        description="Run all v13 non-PINN trainers, then feature extraction"
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--metadata-path", default=str(PROJECT_ROOT / "metadata.csv"))
@@ -78,6 +78,10 @@ def main():
                 str(script_path),
                 "--seed",
                 str(args.seed),
+                "--metadata-path",
+                str(args.metadata_path),
+                "--data-dir",
+                str(args.data_dir),
                 "--output-dir",
                 str(output_dir),
             ],
@@ -103,7 +107,7 @@ def main():
     )
     (completed if feature_ok else failed).append("Feature Extraction")
 
-    print("\n=== v12 non-PINN run complete ===")
+    print("\n=== v13 non-PINN run complete ===")
     print("Completed:", ", ".join(completed) if completed else "none")
     if failed:
         print("Failed:", ", ".join(failed), file=sys.stderr)

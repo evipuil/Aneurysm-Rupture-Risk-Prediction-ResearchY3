@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 13
+
+Source snapshot: June 15, 2026.
+
+- Removed source, site, dataset, and identifier leakage from model inputs and exports.
+- Added patient/group-aware stratified cross-validation with a conservative fallback.
+- Added specificity, balanced accuracy, fixed-threshold F1, and Youden-threshold reporting.
+
 ## Version 12
 
 Source snapshot: May 9 prototype, finalized June 14, 2026.

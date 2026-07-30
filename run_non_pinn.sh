@@ -1,12 +1,12 @@
 #!/bin/bash
-# Version 12 source snapshot
+# Version 13 source snapshot
 #SBATCH --partition=gpu2
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --mem=32GB
-#SBATCH --output=output12.txt
-#SBATCH --error=error12.txt
+#SBATCH --output=output13.txt
+#SBATCH --error=error13.txt
 
 set -euo pipefail
 
@@ -20,7 +20,7 @@ fi
 if [[ -f "${PROJECT_ROOT}/train_geometry.py" ]]; then
     TRAINER_DIR="${PROJECT_ROOT}"
 elif [[ -f "${PROJECT_ROOT}/train_geometry.py" ]]; then
-    TRAINER_DIR="${PROJECT_ROOT}/version12"
+    TRAINER_DIR="${PROJECT_ROOT}/version13"
 elif [[ -f "${SCRIPT_DIR}/train_geometry.py" ]]; then
     TRAINER_DIR="${SCRIPT_DIR}"
 else
@@ -31,10 +31,10 @@ fi
 SEED="${1:-42}"
 METADATA_PATH="${2:-${PROJECT_ROOT}/metadata.csv}"
 DATA_DIR="${3:-${PROJECT_ROOT}/predictions/pinn_corrected}"
-OUTPUT_ROOT="${4:-${PROJECT_ROOT}/results_V12_suite}"
-FEATURE_OUTPUT_DIR="${5:-${PROJECT_ROOT}/results_v12_feature_extraction}"
+OUTPUT_ROOT="${4:-${PROJECT_ROOT}/results_V13_suite}"
+FEATURE_OUTPUT_DIR="${5:-${PROJECT_ROOT}/results_v13_feature_extraction}"
 
-echo "Running V12 non-PINN pipeline"
+echo "Running V13 non-PINN pipeline"
 echo "  project root: ${PROJECT_ROOT}"
 echo "  trainer dir: ${TRAINER_DIR}"
 echo "  seed: ${SEED}"
@@ -51,22 +51,32 @@ python "${TRAINER_DIR}/train_geometry.py" \
 
 python "${TRAINER_DIR}/train_flow_geometry.py" \
     --seed "${SEED}" \
+    --metadata-path "${METADATA_PATH}" \
+    --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_ROOT}/flow_geometry_seed_${SEED}"
 
 python "${TRAINER_DIR}/train_clinical.py" \
     --seed "${SEED}" \
+    --metadata-path "${METADATA_PATH}" \
+    --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_ROOT}/clinical_seed_${SEED}"
 
 python "${TRAINER_DIR}/train_geometry_clinical.py" \
     --seed "${SEED}" \
+    --metadata-path "${METADATA_PATH}" \
+    --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_ROOT}/geometry_clinical_seed_${SEED}"
 
 python "${TRAINER_DIR}/train_geometry_flow_clinical.py" \
     --seed "${SEED}" \
+    --metadata-path "${METADATA_PATH}" \
+    --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_ROOT}/geometry_flow_clinical_seed_${SEED}"
 
 python "${TRAINER_DIR}/train_gnn.py" \
     --seed "${SEED}" \
+    --metadata-path "${METADATA_PATH}" \
+    --data-dir "${DATA_DIR}" \
     --output-dir "${OUTPUT_ROOT}/gnn_seed_${SEED}"
 
 python "${TRAINER_DIR}/feature_extraction.py" \
@@ -75,4 +85,4 @@ python "${TRAINER_DIR}/feature_extraction.py" \
     --output-dir "${FEATURE_OUTPUT_DIR}" \
     --seed "${SEED}"
 
-echo "V12 non-PINN pipeline complete"
+echo "V13 non-PINN pipeline complete"
