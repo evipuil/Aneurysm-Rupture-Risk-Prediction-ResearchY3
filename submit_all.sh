@@ -1,6 +1,6 @@
 #!/bin/bash
-# Version 5 source snapshot
-# Submit the Version 5 training jobs to Slurm.
+# Version 6 source snapshot
+# Submit the Version 6 training jobs to Slurm.
 
 set -euo pipefail
 

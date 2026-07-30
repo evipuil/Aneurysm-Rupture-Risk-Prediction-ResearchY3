@@ -1,4 +1,4 @@
-# Version 5 source snapshot
+# Version 6 source snapshot
 import logging
 import os
 import sys

@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 6
+
+Source snapshot: April 21, 2026.
+
+- Added a combined flow-simulation-to-PINN correction pipeline.
+- Added a PINN-only pipeline and a dedicated flow-pipeline launcher.
+- Carried the Version 5 trainers forward unchanged while the new pipeline was evaluated.
+
 ## Version 5
 
 Source snapshot: March 14-29, 2026.

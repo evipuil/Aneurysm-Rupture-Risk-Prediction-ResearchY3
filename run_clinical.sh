@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 5 source snapshot
+# Version 6 source snapshot
 #SBATCH --partition=gpu2
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
