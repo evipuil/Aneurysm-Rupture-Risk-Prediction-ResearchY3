@@ -1,25 +1,25 @@
 # Aneurysm rupture model history
 
-This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 11. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 11**.
+This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 12. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 12**.
 
-The Version 11 source snapshot dates to May 2-9, 2026, with a later trainer maintenance pass and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
+The Version 12 source snapshot dates to May 9 prototype, finalized June 14, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
 
-## Version 11
+## Version 12
 
-One training entry point for the full model suite plus resumable aggregation.
+Shared trainer and architecture modules with one entry point per model family.
 
-### Changes from Version 10
+### Changes from Version 11
 
-- Unified the maintained geometry, flow, clinical, fusion, GNN, and ensemble families behind one CLI.
-- Added full and abbreviated suite launchers.
-- Expanded pooled prediction aggregation and resumable run handling.
+- Split the unified suite into shared data, training, metrics, and architecture modules.
+- Added dedicated geometry, flow, clinical, fusion, GNN, Newtonian PINN, and Carreau PINN trainers.
+- Added condensed feature extraction, result reporting, and a non-PINN suite runner.
 
 ## Code in this snapshot
 
-- Python: `aggregate_predictions.py`, `train_models.py`
-- Shell: `run_all.sh`, `run_all_abbrev.sh`
+- Python: `base_trainer.py`, `feature_extraction.py`, `make_result_figures.py`, `model_architectures.py`, `run_non_pinn.py`, `train_clinical.py`, `train_flow_geometry.py`, `train_geometry.py`, `train_geometry_clinical.py`, `train_geometry_flow_clinical.py`, `train_gnn.py`, `train_pinn.py`, `train_pinn_carreau.py`
+- Shell: `run_non_pinn.sh`, `run_pinn.sh`
 
-Every Python and shell source carries a Version 11 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
+Every Python and shell source carries a Version 12 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
 
 ## Setup
 
@@ -52,6 +52,7 @@ Data is intentionally not stored here. Most snapshots expect a metadata CSV with
 | `v9` | April 29-30, 2026 | Configurable early, late, and attention fusion experiments |
 | `v10` | May 1, 2026 | Gated geometry, flow, clinical, and global-feature ensemble |
 | `v11` | May 2-9, 2026, with a later trainer maintenance pass | One training entry point for the full model suite plus resumable aggregation |
+| `v12` | May 9 prototype, finalized June 14, 2026 | Shared trainer and architecture modules with one entry point per model family |
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed progression. Commit timestamps show the July 2026 import sequence; they do not claim that the original work happened on those commit dates.
 

@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 12
+
+Source snapshot: May 9 prototype, finalized June 14, 2026.
+
+- Split the unified suite into shared data, training, metrics, and architecture modules.
+- Added dedicated geometry, flow, clinical, fusion, GNN, Newtonian PINN, and Carreau PINN trainers.
+- Added condensed feature extraction, result reporting, and a non-PINN suite runner.
+
 ## Version 11
 
 Source snapshot: May 2-9, 2026, with a later trainer maintenance pass.
