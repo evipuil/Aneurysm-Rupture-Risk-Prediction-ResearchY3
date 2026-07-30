@@ -1,14 +1,4 @@
-# Version 10 source snapshot
-"""
-aggregate_predictions.py
-
-Averages pooled prediction CSVs from multiple v10 seed runs.
-Expects each run to write a pooled_predictions.csv with columns:
-- filepath
-- label
-- prob
-"""
-
+# Version 11 source snapshot
 import argparse
 from pathlib import Path
 

@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --mem=32GB
-#SBATCH --output=output_v11.txt
-#SBATCH --error=error_v11.txt
+#SBATCH --output=output_v11_abbrev.txt
+#SBATCH --error=error_v11_abbrev.txt
 
 set -euo pipefail
 
@@ -37,8 +37,8 @@ mkdir -p "$OUTPUT_ROOT"
 
 IFS=' ' read -r -a SEEDS <<< "${V11_SEEDS:-42}"
 
-# Each spec is MODEL|BACKBONE. Use backbone=none for models where it does not apply.
-IFS=' ' read -r -a RUN_SPECS <<< "${V11_RUNS:-geometry|pointnet2 geometry|pointnext flow_geometry|pointnet2 flow_geometry|pointnext gnn|none clinical|none geometry_clinical|pointnet2 geometry_clinical|pointnext geometry_flow_clinical|pointnet2 geometry_flow_clinical|pointnext}"
+# Ensemble models (geometry_clinical, geometry_flow_clinical) + GNN
+IFS=' ' read -r -a RUN_SPECS <<< "${V11_RUNS:-geometry_clinical|pointnet2 geometry_clinical|pointnext geometry_flow_clinical|pointnet2 geometry_flow_clinical|pointnext gnn|none}"
 
 AMP_ARGS=()
 if [[ "${V11_AMP:-1}" == "1" || "${V11_AMP:-1}" =~ ^(true|TRUE|yes|YES)$ ]]; then
@@ -90,4 +90,4 @@ for spec in "${RUN_SPECS[@]}"; do
   fi
 done
 
-printf '\nAll v11 runs completed successfully.\n'
+printf '\nAll abbreviated v11 runs (ensemble + GNN) completed successfully.\n'

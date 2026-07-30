@@ -1,25 +1,25 @@
 # Aneurysm rupture model history
 
-This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 10. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 10**.
+This private repository tracks the source-only evolution of the aneurysm rupture workflow from Version 1 through Version 11. Filenames are normalized across tags so GitHub can show meaningful line-by-line changes. The current snapshot is **Version 11**.
 
-The Version 10 source snapshot dates to May 1, 2026 and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
+The Version 11 source snapshot dates to May 2-9, 2026, with a later trainer maintenance pass and was imported into Git on July 30, 2026. Git commit dates have not been backdated; the source snapshot field records the pre-existing file chronology.
 
-## Version 10
+## Version 11
 
-Gated geometry, flow, clinical, and global-feature ensemble.
+One training entry point for the full model suite plus resumable aggregation.
 
-### Changes from Version 9
+### Changes from Version 10
 
-- Replaced the Version 9 experiment pair with a unified multibranch classifier.
-- Added auxiliary branch losses, fold-level normalization, and balanced sampling.
-- Added pooled prediction aggregation across seeds.
+- Unified the maintained geometry, flow, clinical, fusion, GNN, and ensemble families behind one CLI.
+- Added full and abbreviated suite launchers.
+- Expanded pooled prediction aggregation and resumable run handling.
 
 ## Code in this snapshot
 
-- Python: `aggregate_predictions.py`, `train_ensemble.py`
-- Shell: `run_all.sh`
+- Python: `aggregate_predictions.py`, `train_models.py`
+- Shell: `run_all.sh`, `run_all_abbrev.sh`
 
-Every Python and shell source carries a Version 10 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
+Every Python and shell source carries a Version 11 source snapshot header. Version prefixes were removed from filenames and matching imports/launchers so the same logical file remains visible as an edit across tags.
 
 ## Setup
 
@@ -51,6 +51,7 @@ Data is intentionally not stored here. Most snapshots expect a metadata CSV with
 | `v8` | April 28-29, 2026 | Self-contained PointNeXt-style geometry, flow, and stacking experiments |
 | `v9` | April 29-30, 2026 | Configurable early, late, and attention fusion experiments |
 | `v10` | May 1, 2026 | Gated geometry, flow, clinical, and global-feature ensemble |
+| `v11` | May 2-9, 2026, with a later trainer maintenance pass | One training entry point for the full model suite plus resumable aggregation |
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed progression. Commit timestamps show the July 2026 import sequence; they do not claim that the original work happened on those commit dates.
 

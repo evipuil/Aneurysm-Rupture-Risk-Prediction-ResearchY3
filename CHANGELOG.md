@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 11
+
+Source snapshot: May 2-9, 2026, with a later trainer maintenance pass.
+
+- Unified the maintained geometry, flow, clinical, fusion, GNN, and ensemble families behind one CLI.
+- Added full and abbreviated suite launchers.
+- Expanded pooled prediction aggregation and resumable run handling.
+
 ## Version 10
 
 Source snapshot: May 1, 2026.
