@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 4
+
+Source snapshot: February 12, 2026.
+
+- Replaced the large prototype suite with focused clinical, geometry, flow-geometry, GNN, and ensemble trainers.
+- Shortened the VTP inference and PINN correction paths.
+- Added one launcher per maintained workflow.
+
 ## Version 3
 
 Source snapshot: February 8, 2026.
