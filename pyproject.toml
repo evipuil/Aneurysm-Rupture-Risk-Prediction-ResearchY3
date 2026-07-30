@@ -1,4 +1,4 @@
-# Version 6 source snapshot
+# Version 7 source snapshot
 [tool.ruff]
 line-length = 100
 target-version = "py310"

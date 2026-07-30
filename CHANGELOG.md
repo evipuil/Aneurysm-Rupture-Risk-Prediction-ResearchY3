@@ -2,6 +2,14 @@
 
 This log describes pre-existing source snapshots imported into Git on July 30, 2026. Commit timestamps record the import sequence and have not been backdated.
 
+## Version 7
+
+Source snapshot: April 21-May 4, 2026.
+
+- Centralized metadata matching, point-cloud operations, metrics, folds, and logging.
+- Rewrote model-specific trainers around the shared core and extracted ensemble logic.
+- Added a Fourier/residual PINN pipeline, one-case wrapper, and dynamic metric plotting.
+
 ## Version 6
 
 Source snapshot: April 21, 2026.

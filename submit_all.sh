@@ -1,22 +1,21 @@
 #!/bin/bash
-# Version 6 source snapshot
-# Submit the Version 6 training jobs to Slurm.
+# Version 7 source snapshot
+# submit_all.sh
+# This script submits all v7 scripts to the Slurm queue.
 
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}"
 mkdir -p logs
 
 SCRIPTS=(
+    "pinn_pipeline.py"
     "train_clinical_only.py"
     "train_clinical_age_sex.py"
     "train_geometry.py"
+    "train_flow_geometry.py"
     "train_gnn.py"
-    "pinn_correction.py"
+    "train_ensemble.py"
+    "train_ensemble_rrt.py"
 )
 
-# You can adjust Slurm parameters (time, partition, GPUs, memory, environment) as needed.
 for script in "${SCRIPTS[@]}"; do
     job_name=$(basename "$script" .py)
 
@@ -33,15 +32,12 @@ for script in "${SCRIPTS[@]}"; do
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 
-# Load environment (adjust if needed)
 source ~/.bashrc
 conda activate pointnet
 
-# Run from the snapshot directory so normalized filenames resolve correctly.
-cd "${SCRIPT_DIR}"
-python "$script"
+python $script
 EOT
 
 done
 
-echo "All training scripts submitted!"
+echo "All v7 scripts submitted!"

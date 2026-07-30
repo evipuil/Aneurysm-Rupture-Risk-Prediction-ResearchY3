@@ -5,10 +5,10 @@
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --mem=32GB
-#SBATCH --output=output_v7_ensemble_rrt.txt
-#SBATCH --error=error_v7_ensemble_rrt.txt
+#SBATCH --output=output_pinn_pipeline.txt
+#SBATCH --error=error_pinn_pipeline.txt
 
 source ~/.bashrc
 conda activate pointnet
 
-python train_ensemble_rrt.py
+python pinn_pipeline.py
