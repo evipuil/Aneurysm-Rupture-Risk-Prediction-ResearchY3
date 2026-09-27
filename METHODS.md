@@ -136,5 +136,3 @@ Detailed release notes are provided in [CHANGELOG.md](CHANGELOG.md).
 - The `pointnext` option is a project-specific PointNeXt-style point-cloud abstraction.
 - Reported model performance should be interpreted in the context of the study cohort and
   external validation requirements.
-- This software is intended for research use and is not a clinical decision-support
-  system.

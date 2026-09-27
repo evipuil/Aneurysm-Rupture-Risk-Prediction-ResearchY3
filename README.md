@@ -15,11 +15,11 @@ I developed this research code to compare those inputs through point-cloud model
 | Geometry | 0.699 |
 | Geometry and flow ensemble | 0.791 |
 
-These values come from the table on page 21 and the final Results section on page 24 of the attached 2025–26 paper. The paper describes five-fold validation with an 80/20 training/validation division. Its abstract contains earlier values, so the table above follows the final Results section. Patient grouping is not established by that paper's description; these values should not be presented as patient-grouped or external-validation results, or as results from the subsequent Year 4 study.
+The final results on pages 21 and 24 of the 2025–26 paper report the strongest discrimination when geometry and flow are combined. The paper describes five-fold validation with an 80/20 training/validation division; it does not specify patient grouping. The table follows those final results, which differ from the earlier values in the abstract.
 
-![Training curve and model comparison tables from the Year 3 paper](docs/images/research-figure.png)
+![Year 3 rupture classification AUROC for clinical, geometry, and geometry-plus-flow models](docs/images/model-comparison.png)
 
-*Page 21 of the paper, reproduced unchanged. A physics training loss is not a measurement of agreement with an independent CFD or FEM reference.*
+*Validation AUROC reported in the Year 3 paper.*
 
 ## My contributions
 
@@ -29,6 +29,12 @@ These values come from the table on page 21 and the final Results section on pag
 - Established consistent case selection and evaluation across the modeling experiments.
 
 The paper places this work within a broader detection, flow modeling, and visualization pipeline, with mentorship from Dr. Xianqi Li at Florida Institute of Technology. This repository contains the rupture-classification study. The [web](https://github.com/evipuil/HemoViz3D-Web-App-ResearchY1) and [VR](https://github.com/evipuil/HemoViz3D-VR-App-ResearchY2) projects document the earlier visualization work.
+
+## Preprint
+
+**Preprint:** Eshan Vipuil and Xianqi Li. [Integrating Physics-Informed Neural Networks and 3D Vascular Geometry Learning for Cerebral Aneurysm Detection and Multimodal Rupture-Risk Prediction](https://arxiv.org/abs/2607.10530). arXiv, July 2026. [Read the PDF](https://arxiv.org/pdf/2607.10530).
+
+The preprint presents a later version of the detection and multimodal modeling study. The results above remain those of the 2025–26 school research paper.
 
 ## Research papers
 
@@ -40,5 +46,3 @@ The paper places this work within a broader detection, flow modeling, and visual
 ## Methods
 
 [Methods and analysis](METHODS.md) describes the model families, data requirements, and available programs. The [Year 4 study](https://github.com/evipuil/Cerebral-Aneurysm-Modeling-ResearchY4) examines patient-grouped validation, generalization, and FEM-informed flow models.
-
-This study classifies retrospective rupture status. It does not establish prospective rupture risk or clinical benefit.
